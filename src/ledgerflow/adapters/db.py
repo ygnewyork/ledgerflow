@@ -9,6 +9,7 @@ atomic.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 from typing import Any, Iterator
 
@@ -37,8 +38,18 @@ def pool() -> ConnectionPool:
 def close_pool() -> None:
     global _pool
     if _pool is not None:
-        _pool.close()
+        try:
+            _pool.close()
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            pass
         _pool = None
+
+
+# Close the pool while the interpreter is still alive. Without this, Python
+# 3.14 tears down before the pool's worker threads are joined and the exit path
+# ends in PythonFinalizationError -- most visibly after a Ctrl-C, where an
+# alarming traceback follows a perfectly ordinary interrupt.
+atexit.register(close_pool)
 
 
 class UnitOfWork:

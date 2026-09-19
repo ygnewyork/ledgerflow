@@ -28,15 +28,23 @@ setup: $(VENV)  ## create the virtualenv and install the project
 	$(PIP) install --quiet -e ".[api,dev]"
 	@echo "ready. next: make db-create && make demo"
 
-db-create:  ## create the role and database the app expects
-	@createdb ledgerflow 2>/dev/null && echo "created database 'ledgerflow'" \
-		|| echo "could not create 'ledgerflow' with $$(command -v createdb || echo createdb)"
-	@# A Homebrew cluster makes your macOS username the superuser; an EDB
-	@# install does not, so the role may simply not exist. Creating it is
-	@# harmless when it already does.
-	@psql -d postgres -tAc "select 1 from pg_roles where rolname='$(USER)'" 2>/dev/null \
-		| grep -q 1 || psql -d postgres -c "create role \"$(USER)\" login superuser" 2>/dev/null \
-		|| true
+db-create:  ## create the database named in LEDGERFLOW_DATABASE_URL
+	@# Must go through the URL, not bare `createdb`: createdb defaults to port
+	@# 5432, so on a machine with a second Postgres it cheerfully connects to
+	@# the wrong server and asks for a password nobody has.
+	@url="$(LEDGERFLOW_DATABASE_URL)"; \
+	dbname=$${url##*/}; dbname=$${dbname%%\?*}; \
+	maint="$${url%/*}/postgres"; \
+	if [ -z "$$dbname" ] || [ "$$dbname" = "$$url" ]; then \
+		echo "could not read a database name out of $$url"; exit 1; fi; \
+	out=$$(PGCONNECT_TIMEOUT=5 psql -w "$$maint" \
+		-c "create database \"$$dbname\"" 2>&1); \
+	case "$$out" in \
+		CREATE*)              echo "created database '$$dbname'" ;; \
+		*"already exists"*)   echo "database '$$dbname' already exists" ;; \
+		*) echo "could not create '$$dbname' on $$maint"; \
+		   echo "  $$(echo "$$out" | head -1)" ;; \
+	esac
 	@$(MAKE) --no-print-directory doctor
 
 brew-pg-5433:  ## move Homebrew's postgres to 5433, leaving another install on 5432
