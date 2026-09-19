@@ -4,10 +4,9 @@ The risk with a project this shape is that it becomes eight half-built
 subsystems. So every milestone below has a **done when** that is demonstrable,
 and each one is independently worth showing even if you stop there.
 
-**Built: M1–M6.** The ledger, API, event pipeline, normalization, features and
-risk, and the dashboard all run, with 84 tests against a real PostgreSQL. M7
-(load testing at scale) is not done — the numbers in the résumé bullet below
-are still placeholders, and should stay placeholders until they are measured.
+**Built: M1–M7.** Everything runs, with 84 tests against a real PostgreSQL and
+a load test whose numbers are measured rather than claimed — see
+[`06-load-test.md`](06-load-test.md).
 
 ---
 
@@ -110,16 +109,21 @@ else.
 
 ---
 
-## M7 — Load  (not started)
+## M7 — Load ✅
 
-- Synthetic generator: millions of events, realistic descriptor mess
-- Measure p50/p95/p99 write latency, throughput, consumer lag under load
-- Publish the numbers *and the bottleneck you found*, with a flamegraph
+- Synthetic generator producing realistic descriptor mess (`ledgerflow loadgen`)
+- Concurrency sweep over the real HTTP API (`ledgerflow bench --sweep`)
+- A `--funding-accounts` flag, so the contended and sharded cases can be
+  compared directly rather than described
 
-Real measured numbers with an honest limitation beat round claims. "12k
-transactions/sec; p99 write latency 38ms; the ceiling was the single-row
-snapshot update on hot accounts" is a sentence that starts a good conversation.
-"Scales to 100k TPS" invites someone to ask how you measured it.
+**Done:** 192 write txn/s, p50 10.3 ms, p99 12.9 ms on 4 vCPUs with Postgres
+co-located and full durability; 55 txn/s against a single funding account,
+where the row lock serializes every write. Zero errors, ledger reconciled.
+
+The numbers mattered less than what finding them exposed: a balance cache
+nothing ever wrote, a rate limiter that allowed everything without Redis, and
+five redundant round trips per write. That is the argument for load testing
+your own project — not the throughput figure, the bugs only load reveals.
 
 ---
 
@@ -163,7 +167,8 @@ and more specific:
 > definition shared by the streaming and backfill paths for point-in-time
 > correctness. Added versioned transaction normalization, signed webhooks with
 > backoff and dead-letter redrive, and bitemporal balance reconstruction. Load
-> tested to N transactions/sec (p99 write latency Xms).
+> tested to 192 write transactions/sec at p99 12.9 ms on 4 vCPUs with full
+> commit durability, tracing the ceiling to per-account row locks.
 
 Every clause there is a question you can answer for twenty minutes, and none of
 them is a claim that falls apart under one follow-up.
@@ -184,6 +189,10 @@ them is a claim that falls apart under one follow-up.
 - How do you fix a transaction posted with the wrong amount last Tuesday?
 - `effective_at` vs `recorded_at` — when do they diverge and who cares?
 - Why not put the ledger in Kafka and make Postgres the projection?
+- Your throughput peaks at concurrency 2 and flattens. What does that shape
+  mean, and what would you do about it?
+- One funding account is 4x slower than thirty-two. Why, and is that a bug?
+- How many database round trips does one write take, and how do you know?
 - Why Spark, when one machine could handle this volume?
 - What does `withWatermark("effective_at", "2 hours")` actually do to state, and
   what happens to an event that arrives three hours late?

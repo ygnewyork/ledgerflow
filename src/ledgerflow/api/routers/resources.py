@@ -26,6 +26,22 @@ from ..schemas import (
 
 router = APIRouter(prefix="/v1")
 
+# These handlers are sync `def`, not `async def`, and that is deliberate.
+#
+# psycopg is a blocking driver. FastAPI runs an `async def` handler directly on
+# the event loop, so a blocking query inside one stalls every other request in
+# the process -- the server stops being concurrent at all, and throughput
+# flattens no matter how many clients you point at it. A plain `def` handler is
+# dispatched to the threadpool instead, where blocking is exactly what is
+# expected.
+#
+# Measured honestly: on this workload the conversion did NOT change throughput,
+# because commit durability -- not the event loop -- is what binds here. It is
+# kept because the mixture is a latent hazard: the moment one query gets slow,
+# an async handler holding a blocking driver stalls every other request in the
+# process. The alternative is an async driver end to end; the mistake is mixing
+# them and hoping.
+
 
 def _money(amount: int, currency: str) -> Money:
     try:
@@ -42,7 +58,7 @@ def _money(amount: int, currency: str) -> Money:
 
 
 @router.post("/accounts", status_code=201)
-async def create_account(
+def create_account(
     body: CreateAccount,
     request: Request,
     ctx: TenantContext = Depends(context),
@@ -64,7 +80,7 @@ async def create_account(
 
 
 @router.get("/accounts")
-async def list_accounts(
+def list_accounts(
     ctx: TenantContext = Depends(context), limit: int = Query(25, ge=1, le=100)
 ) -> dict[str, Any]:
     with read_only() as uow:
@@ -75,14 +91,14 @@ async def list_accounts(
 
 
 @router.get("/accounts/{account_id}")
-async def get_account(account_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def get_account(account_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     with read_only() as uow:
         row = services.resolve_account(uow, ctx, account_id)
         return serializers.account(row, uow.accounts.balance(row["id"]))
 
 
 @router.get("/accounts/{account_id}/balance")
-async def get_balance(
+def get_balance(
     account_id: str,
     ctx: TenantContext = Depends(context),
     as_of: str | None = Query(None, description="business time: when the money moved"),
@@ -103,7 +119,7 @@ async def get_balance(
 
 
 @router.post("/transactions", status_code=201)
-async def create_transaction(
+def create_transaction(
     body: CreateTransaction,
     request: Request,
     ctx: TenantContext = Depends(context),
@@ -128,7 +144,7 @@ async def create_transaction(
 
 
 @router.get("/transactions")
-async def list_transactions(
+def list_transactions(
     ctx: TenantContext = Depends(context),
     account: str | None = None,
     starting_after: str | None = None,
@@ -150,7 +166,7 @@ async def list_transactions(
 
 
 @router.get("/transactions/{transaction_id}")
-async def get_transaction(
+def get_transaction(
     transaction_id: str, ctx: TenantContext = Depends(context)
 ) -> dict[str, Any]:
     with read_only() as uow:
@@ -161,7 +177,7 @@ async def get_transaction(
 
 
 @router.post("/transactions/{transaction_id}/reversals", status_code=201)
-async def reverse_transaction(
+def reverse_transaction(
     transaction_id: str,
     body: CreateReversal,
     request: Request,
@@ -183,7 +199,7 @@ async def reverse_transaction(
 
 
 @router.post("/transfers", status_code=201)
-async def create_transfer(
+def create_transfer(
     body: CreateTransfer,
     request: Request,
     ctx: TenantContext = Depends(context),
@@ -210,7 +226,7 @@ async def create_transfer(
 
 
 @router.get("/ledger/entries")
-async def list_entries(
+def list_entries(
     ctx: TenantContext = Depends(context),
     account: str | None = None,
     since_entry_id: int = 0,
@@ -230,7 +246,7 @@ async def list_entries(
 
 
 @router.get("/events")
-async def list_events(
+def list_events(
     ctx: TenantContext = Depends(context),
     starting_after: str | None = None,
     limit: int = Query(25, ge=1, le=100),
@@ -244,7 +260,7 @@ async def list_events(
 
 
 @router.get("/events/{event_id}")
-async def get_event(event_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def get_event(event_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     with read_only() as uow:
         row = uow.events.get(event_id, ctx.tenant_id, ctx.mode)
         if row is None:
@@ -253,7 +269,7 @@ async def get_event(event_id: str, ctx: TenantContext = Depends(context)) -> dic
 
 
 @router.post("/events/{event_id}/redeliver", status_code=202)
-async def redeliver_event(event_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def redeliver_event(event_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     """Re-send a webhook. Receivers dedupe on event id, so this is safe."""
     from ...adapters.db import unit_of_work
 
@@ -274,7 +290,7 @@ async def redeliver_event(event_id: str, ctx: TenantContext = Depends(context)) 
 
 
 @router.post("/replays", status_code=202)
-async def create_replay(body: CreateReplay, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def create_replay(body: CreateReplay, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     """Rewind a consumer group over a range of the stream.
 
     Distinct from redelivering a webhook: this reprocesses history and can
@@ -312,7 +328,7 @@ async def create_replay(body: CreateReplay, ctx: TenantContext = Depends(context
 
 
 @router.get("/dead_letters")
-async def list_dead_letters(
+def list_dead_letters(
     ctx: TenantContext = Depends(context),
     consumer: str | None = None,
     unresolved: bool = True,
@@ -326,7 +342,7 @@ async def list_dead_letters(
 
 
 @router.post("/dead_letters/{dlq_id}/redrive", status_code=202)
-async def redrive(dlq_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def redrive(dlq_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     from ...adapters.db import unit_of_work
 
     with unit_of_work() as uow:
@@ -344,7 +360,7 @@ async def redrive(dlq_id: str, ctx: TenantContext = Depends(context)) -> dict[st
 
 
 @router.post("/webhook_endpoints", status_code=201)
-async def create_webhook_endpoint(
+def create_webhook_endpoint(
     body: CreateWebhookEndpoint, ctx: TenantContext = Depends(context)
 ) -> dict[str, Any]:
     import hashlib
@@ -369,7 +385,7 @@ async def create_webhook_endpoint(
 
 
 @router.get("/webhook_endpoints/{endpoint_id}/deliveries")
-async def list_deliveries(
+def list_deliveries(
     endpoint_id: str, ctx: TenantContext = Depends(context), limit: int = Query(50, ge=1, le=200)
 ) -> dict[str, Any]:
     with read_only() as uow:
@@ -381,7 +397,7 @@ async def list_deliveries(
 
 
 @router.post("/webhook_deliveries/{delivery_id}/retry", status_code=202)
-async def retry_delivery(delivery_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def retry_delivery(delivery_id: str, ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     from ...adapters.db import unit_of_work
 
     with unit_of_work() as uow:
@@ -397,13 +413,13 @@ async def retry_delivery(delivery_id: str, ctx: TenantContext = Depends(context)
 
 
 @router.get("/health")
-async def health(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def health(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     with read_only() as uow:
         return services.health(uow)
 
 
 @router.get("/fraud_signals")
-async def list_fraud_signals(
+def list_fraud_signals(
     ctx: TenantContext = Depends(context),
     account: str | None = None,
     limit: int = Query(50, ge=1, le=200),
@@ -415,7 +431,7 @@ async def list_fraud_signals(
 
 
 @router.get("/analytics/spend_by_category")
-async def spend_by_category(
+def spend_by_category(
     ctx: TenantContext = Depends(context),
     account: str | None = None,
     days: int = Query(90, ge=1, le=730),
@@ -436,7 +452,7 @@ async def spend_by_category(
 
 
 @router.post("/reconcile")
-async def reconcile(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+def reconcile(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     """Recompute every balance from entries and diff against the snapshot cache."""
     with read_only() as uow:
         mismatches = uow.accounts.reconcile()

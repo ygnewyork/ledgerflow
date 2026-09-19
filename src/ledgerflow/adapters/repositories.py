@@ -83,6 +83,26 @@ class AccountRepository(_Repo):
             (external_id, tenant_id, mode),
         )
 
+    def resolve(self, ref: str, tenant_id: str, mode: str) -> dict[str, Any] | None:
+        """Find by our id or the caller's external id, in one round trip.
+
+        Callers may use either, so this used to try one and then the other --
+        two queries every time an external id was used, which is the common
+        case. One query with both predicates does the same work once. The
+        ORDER BY makes the precedence explicit rather than incidental: our own
+        id wins if a caller ever sets an external_id that collides with one.
+        """
+        return self._one(
+            """
+            SELECT * FROM accounts
+             WHERE tenant_id = %(tenant)s AND mode = %(mode)s
+               AND (id = %(ref)s OR external_id = %(ref)s)
+             ORDER BY (id = %(ref)s) DESC
+             LIMIT 1
+            """,
+            {"ref": ref, "tenant": tenant_id, "mode": mode},
+        )
+
     def list(self, tenant_id: str, mode: str, limit: int = 100) -> list[dict[str, Any]]:
         return self._all(
             "SELECT * FROM accounts WHERE tenant_id = %s AND mode = %s "
@@ -349,29 +369,28 @@ class EntryRepository(_Repo):
         half-inserted transaction is legal mid-statement and illegal at the
         boundary -- which is exactly the semantics double-entry needs.
         """
-        rows = []
+        # One multi-row INSERT rather than one per leg. The deferred trigger
+        # fires at COMMIT either way, so this changes nothing about when the
+        # balance is checked -- only how many round trips it takes to get there.
+        values: list[Any] = []
+        placeholders: list[str] = []
+        for entry in txn.entries:
+            placeholders.append("(%s, %s, %s, %s, %s, %s, COALESCE(%s, now()))")
+            values.extend([
+                txn.id, entry.account_id, entry.direction.value,
+                entry.amount.minor, entry.amount.currency,
+                txn.effective_at, recorded_at,
+            ])
+
         with self.conn.cursor() as cur:
-            for entry in txn.entries:
-                cur.execute(
-                    """
-                    INSERT INTO entries
-                        (transaction_id, account_id, direction, amount_minor,
-                         currency, effective_at, recorded_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, now()))
-                    RETURNING *
-                    """,
-                    (
-                        txn.id,
-                        entry.account_id,
-                        entry.direction.value,
-                        entry.amount.minor,
-                        entry.amount.currency,
-                        txn.effective_at,
-                        recorded_at,
-                    ),
-                )
-                rows.append(cur.fetchone())
-        return rows  # type: ignore[return-value]
+            cur.execute(
+                "INSERT INTO entries (transaction_id, account_id, direction, "
+                "amount_minor, currency, effective_at, recorded_at) VALUES "
+                + ", ".join(placeholders)
+                + " RETURNING *",
+                values,
+            )
+            return cur.fetchall()  # type: ignore[return-value]
 
     def for_transaction(self, txn_id: str) -> list[dict[str, Any]]:
         return self._all(

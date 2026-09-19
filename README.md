@@ -124,6 +124,23 @@ is possible at all.
 
 ---
 
+## Measured
+
+On 4 vCPUs with Postgres on the same box, one uvicorn worker, full durability:
+**192 write txn/s, p50 10.3 ms, p99 12.9 ms**, zero errors, ledger reconciled
+clean. Against a *single* funding account it is 55 txn/s — every purchase from
+one account serializes on that account's row lock, which is what stops two
+concurrent transfers from both passing the same overdraft check.
+
+The numbers are small because the hardware is. The useful part was what the
+load test exposed: a balance cache that was never written (45x on reads once it
+was), a rate limiter that allowed everything whenever Redis was absent, and
+five redundant database round trips per write. Full write-up, including what
+was ruled out and what would actually move the number:
+[`docs/06-load-test.md`](docs/06-load-test.md).
+
+---
+
 ## Failure modes handled
 
 | Failure | Mechanism |
@@ -242,6 +259,8 @@ curl -X POST localhost:8000/v1/transactions \
 # send it again -- identical response, Idempotent-Replay: true, money moves once
 ```
 
+- `python -m ledgerflow.bench --key lf_test_... --sweep --funding-accounts 32`
+  — the load test ([results](docs/06-load-test.md))
 - `http://localhost:8000/docs` — the generated OpenAPI browser, all 22 routes
 - `make test` — 84 tests against the real database
 - `python -m ledgerflow.cli reconcile` — recompute every balance from entries
@@ -267,6 +286,7 @@ docs/
   03-api.md             endpoints, the idempotency protocol, webhooks, versioning
   04-pipeline.md        outbox, topics, consumers, normalization, Spark
   05-roadmap.md         milestones and what each one delivered
+  06-load-test.md       measured throughput, and the four bugs it exposed
 src/ledgerflow/
   domain/               pure core -- money, ledger, posting rules. no I/O.
   adapters/             psycopg pool, one transaction boundary, every SQL query

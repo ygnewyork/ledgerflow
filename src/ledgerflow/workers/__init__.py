@@ -51,6 +51,13 @@ def drain_all(verbose: bool = False) -> dict[str, int]:
         counts["normalized"] += run(Normalizer(), once=True)
         counts["scored"] += run(RiskWorker(), once=True)
 
+    # keep the balance cache current, so reads stay bounded as history grows
+    from ..adapters.db import unit_of_work
+
+    with unit_of_work() as uow:
+        for row in uow.execute("SELECT DISTINCT account_id FROM entries"):
+            uow.accounts.write_snapshot(row["account_id"])
+
     counts.update(dispatch_once())
     if verbose:
         print(counts)

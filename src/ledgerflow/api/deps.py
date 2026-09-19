@@ -27,7 +27,7 @@ def parse_timestamp(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-async def context(
+def context(
     request: Request,
     authorization: str | None = Header(None),
     ledgerflow_version: str | None = Header(None, alias="LedgerFlow-Version"),

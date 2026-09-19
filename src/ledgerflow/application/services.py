@@ -50,9 +50,7 @@ def resolve_account(uow: UnitOfWork, ctx: TenantContext, ref: str) -> dict[str, 
 
     Developers should not have to keep a mapping table just to use your API.
     """
-    row = uow.accounts.get(ref, ctx.tenant_id, ctx.mode)
-    if row is None:
-        row = uow.accounts.get_by_external(ref, ctx.tenant_id, ctx.mode)
+    row = uow.accounts.resolve(ref, ctx.tenant_id, ctx.mode)
     if row is None:
         raise AccountNotFound(f"no account {ref!r} in {ctx.mode} mode", param="account")
     return row
@@ -182,12 +180,18 @@ def post_transaction(
     if descriptor:
         # raw is kept forever and never modified; every normalized row is
         # derived from it, and re-derivable when the normalizer changes
-        funding = accounts.get("funding") or accounts.get("source") or next(iter(accounts.values()))
+        # reuse the row we already resolved above; looking it up again is two
+        # more round trips for an answer we are holding
+        role = (
+            "funding" if "funding" in resolved
+            else "source" if "source" in resolved
+            else next(iter(resolved))
+        )
         uow.normalization.insert_raw(
             raw_id=ids.new_id("raw"),
             tenant_id=ctx.tenant_id,
             mode=ctx.mode,
-            account_id=resolve_account(uow, ctx, funding)["id"],
+            account_id=resolved[role]["id"],
             transaction_id=txn.id,
             payload={"kind": kind, "descriptor": descriptor, "metadata": dict(metadata or {})},
             descriptor=descriptor,

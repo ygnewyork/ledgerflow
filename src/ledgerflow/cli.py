@@ -136,6 +136,34 @@ def cmd_loadgen(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    """Fold each account's entry tail into a balance snapshot.
+
+    Without this the snapshot table stays empty and every balance read scans
+    the account's whole history -- measurably linear: ~0.5 ms at 600 entries,
+    ~15 ms at 35,000. The design always called for a background job; this is it.
+    """
+    written = 0
+    with unit_of_work() as uow:
+        stale = uow.execute(
+            """
+            SELECT a.id, count(e.id)::int AS tail
+              FROM accounts a
+              JOIN entries e ON e.account_id = a.id
+             WHERE e.id > COALESCE((
+                     SELECT max(up_to_entry_id) FROM balance_snapshots s
+                      WHERE s.account_id = a.id), 0)
+             GROUP BY a.id
+            HAVING count(e.id) >= %s
+            """,
+            (args.threshold,),
+        )
+        for row in stale:
+            if uow.accounts.write_snapshot(row["id"]):
+                written += 1
+    print(f"wrote {written} snapshot(s) (threshold {args.threshold} entries)")
+
+
 def cmd_reconcile(args: argparse.Namespace) -> None:
     with read_only() as uow:
         mismatches = uow.accounts.reconcile()
@@ -172,6 +200,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--count", type=int, default=1000)
     p.add_argument("--days", type=int, default=90); p.add_argument("--seed", type=int, default=17)
     p.set_defaults(func=cmd_loadgen)
+
+    p = sub.add_parser("snapshot")
+    p.add_argument("--threshold", type=int, default=500,
+                   help="snapshot accounts with at least this many uncached entries")
+    p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("reconcile"); p.set_defaults(func=cmd_reconcile)
 

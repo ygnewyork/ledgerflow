@@ -86,31 +86,41 @@ class RateLimiter:
         return self._check_pg(bucket_key, cost, now)
 
     def _check_pg(self, bucket_key: str, cost: int, now: float) -> Decision:
+        """Postgres fallback.
+
+        The obvious formulation -- only subtract when there are enough tokens,
+        then report `tokens >= 0` -- never denies anything: at zero tokens it
+        declines to subtract, leaves the value at zero, and zero passes the
+        test. That bug made the limiter a no-op whenever Redis was absent,
+        which is exactly when it is load-bearing.
+
+        So always subtract, clamp the floor at -cost, and let the sign carry
+        the answer. A denied request sits one cost below zero and climbs back
+        as the bucket refills.
+        """
         from ..adapters.db import pool
 
         with pool().connection() as conn:
             row = conn.execute(
                 """
-                INSERT INTO rate_limit_buckets (bucket_key, tokens, updated_at)
+                INSERT INTO rate_limit_buckets AS b (bucket_key, tokens, updated_at)
                 VALUES (%(key)s, %(capacity)s - %(cost)s, now())
                 ON CONFLICT (bucket_key) DO UPDATE SET
-                    tokens = LEAST(
-                        %(capacity)s,
-                        rate_limit_buckets.tokens
-                        + EXTRACT(EPOCH FROM now() - rate_limit_buckets.updated_at) * %(refill)s
-                    ) - CASE
-                        WHEN LEAST(
+                    tokens = GREATEST(
+                        -%(cost)s,
+                        LEAST(
                             %(capacity)s,
-                            rate_limit_buckets.tokens
-                            + EXTRACT(EPOCH FROM now() - rate_limit_buckets.updated_at) * %(refill)s
-                        ) >= %(cost)s THEN %(cost)s ELSE 0 END,
+                            b.tokens
+                            + EXTRACT(EPOCH FROM now() - b.updated_at) * %(refill)s
+                        ) - %(cost)s
+                    ),
                     updated_at = now()
                 RETURNING tokens
                 """,
                 {"key": bucket_key, "capacity": self.capacity,
                  "refill": self.refill, "cost": cost},
             ).fetchone()
-        tokens = float(row["tokens"]) if row else 0.0
+        tokens = float(row["tokens"]) if row else -float(cost)
         return self._decision(tokens >= 0, max(tokens, 0.0), now)
 
     def _decision(self, allowed: bool, tokens: float, now: float) -> Decision:
