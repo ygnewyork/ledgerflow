@@ -3,7 +3,7 @@ name = "ledgerflow"
 version = "0.0.1"
 description = "Real-time financial event platform: double-entry ledger, idempotent APIs, transactional outbox."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = []   # the domain core has none, and that is the point
 
 [project.optional-dependencies]
 # Nothing here is imported by src/ledgerflow/domain, and that is the point:
@@ -19,7 +19,14 @@ api = [
 ]
 stream = ["confluent-kafka>=2.6"]
 analytics = ["pyspark>=3.5", "delta-spark>=3.2", "pyarrow>=18.0"]
-dev = ["pytest>=8.3", "hypothesis>=6.115", "ruff>=0.7", "mypy>=1.13", "testcontainers>=4.8"]
+dev = [
+    "pytest>=8.3",
+    "hypothesis>=6.115",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    # the dashboard is checked by rendering it, not by reading the CSS
+    "playwright>=1.48",
+]
 
 [build-system]
 requires = ["hatchling"]

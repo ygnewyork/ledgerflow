@@ -278,6 +278,11 @@ CREATE TABLE raw_transactions (
     tenant_id    TEXT        NOT NULL REFERENCES tenants(id),
     mode         api_mode    NOT NULL,
     account_id   TEXT        NOT NULL REFERENCES accounts(id),
+    -- the posting this descriptor arrived with. an explicit FK, because
+    -- matching raw rows to transactions on (timestamp, amount) is a heuristic
+    -- that silently picks the wrong row the first time a customer buys two
+    -- identical coffees in the same second.
+    transaction_id TEXT      REFERENCES transactions(id),
     -- exactly what the caller sent, forever, untouched.
     -- every normalized row is derivable from this; the reverse is not true.
     payload      JSONB       NOT NULL,
@@ -287,6 +292,8 @@ CREATE TABLE raw_transactions (
     occurred_at  TIMESTAMPTZ NOT NULL,
     received_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX raw_transactions_txn_idx ON raw_transactions(transaction_id);
 
 CREATE TABLE merchants (
     id            TEXT PRIMARY KEY,
@@ -373,75 +380,3 @@ CREATE TABLE webhook_deliveries (
 CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries(next_attempt_at)
     WHERE status = 'pending';
 CREATE INDEX webhook_deliveries_endpoint_idx ON webhook_deliveries(endpoint_id, created_at DESC);
-
-
--- ============================================================================
--- Queries that matter
--- ============================================================================
-
--- Current balance, from the snapshot cache plus the tail of the ledger.
--- O(entries since last snapshot), not O(all entries).
---
---   $1 = account_id
---
--- WITH snap AS (
---     SELECT up_to_entry_id, balance_minor
---       FROM balance_snapshots
---      WHERE account_id = $1
---      ORDER BY up_to_entry_id DESC
---      LIMIT 1
--- )
--- SELECT COALESCE((SELECT balance_minor FROM snap), 0)
---      + COALESCE(SUM(CASE WHEN e.direction = a.normal_balance
---                          THEN e.amount_minor ELSE -e.amount_minor END), 0) AS balance_minor
---   FROM entries e
---   JOIN accounts a ON a.id = e.account_id
---  WHERE e.account_id = $1
---    AND e.id > COALESCE((SELECT up_to_entry_id FROM snap), 0);
-
-
--- Bitemporal time travel. Two axes, two questions:
---
---   $2 = as_of        (business time)  — "what was true"
---   $3 = as_known_at  (system time)    — "what we believed"
---
--- Pass only $2 for the corrected history. Pass both to reproduce exactly what
--- the dashboard showed on some past date, backdated corrections excluded.
---
--- SELECT COALESCE(SUM(CASE WHEN e.direction = a.normal_balance
---                          THEN e.amount_minor ELSE -e.amount_minor END), 0) AS balance_minor
---   FROM entries e
---   JOIN accounts a ON a.id = e.account_id
---  WHERE e.account_id  = $1
---    AND e.effective_at <= $2
---    AND e.recorded_at  <= COALESCE($3, 'infinity'::timestamptz);
-
-
--- Reconciliation: recompute every balance from raw entries and diff against
--- the snapshot cache. Runs nightly. Any nonzero row is a bug worth paging for.
---
--- SELECT a.id,
---        s.balance_minor                                        AS cached,
---        SUM(CASE WHEN e.direction = a.normal_balance
---                 THEN e.amount_minor ELSE -e.amount_minor END) AS recomputed
---   FROM accounts a
---   JOIN entries e ON e.account_id = a.id
---   LEFT JOIN LATERAL (
---        SELECT balance_minor, up_to_entry_id FROM balance_snapshots
---         WHERE account_id = a.id ORDER BY up_to_entry_id DESC LIMIT 1
---   ) s ON TRUE
---  WHERE e.id <= s.up_to_entry_id
---  GROUP BY a.id, s.balance_minor
--- HAVING s.balance_minor IS DISTINCT FROM
---        SUM(CASE WHEN e.direction = a.normal_balance
---                 THEN e.amount_minor ELSE -e.amount_minor END);
-
-
--- The global invariant. Across the whole ledger, for every currency, the
--- debits and credits must cancel. If this ever returns a row, stop the world.
---
--- SELECT currency,
---        SUM(CASE WHEN direction = 'debit' THEN amount_minor ELSE -amount_minor END) AS drift
---   FROM entries
---  GROUP BY currency
--- HAVING SUM(CASE WHEN direction = 'debit' THEN amount_minor ELSE -amount_minor END) <> 0;

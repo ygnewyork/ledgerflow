@@ -17,3 +17,8 @@ data/
 .env.*
 !.env.example
 .DS_Store
+
+# local dev environment pointers
+.devenv
+data/
+_checkpoints/

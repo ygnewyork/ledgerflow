@@ -1,0 +1,44 @@
+# Everything LedgerFlow needs, locally.
+#
+# Redpanda is in the `kafka` profile and off by default: the EventStream port
+# has a Postgres implementation, so the full pipeline and the whole test suite
+# run with just the first two services. Requiring a broker to run the tests is
+# a good way to end up with tests nobody runs.
+#
+#   docker compose up -d                  # postgres + redis
+#   docker compose --profile kafka up -d  # ...and redpanda
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ledgerflow
+      POSTGRES_PASSWORD: ledgerflow
+      POSTGRES_DB: ledgerflow
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledgerflow"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # no persistence: everything in Redis here is a cache or a rate-limit
+    # bucket, and both are correct to lose on restart
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+
+  redpanda:
+    profiles: ["kafka"]
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports: ["9092:9092", "9644:9644"]
+
+volumes:
+  pgdata:

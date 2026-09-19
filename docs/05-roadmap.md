@@ -4,9 +4,14 @@ The risk with a project this shape is that it becomes eight half-built
 subsystems. So every milestone below has a **done when** that is demonstrable,
 and each one is independently worth showing even if you stop there.
 
+**Built: M1–M6.** The ledger, API, event pipeline, normalization, features and
+risk, and the dashboard all run, with 84 tests against a real PostgreSQL. M7
+(load testing at scale) is not done — the numbers in the résumé bullet below
+are still placeholders, and should stay placeholders until they are measured.
+
 ---
 
-## M1 — The ledger  (~1 week)
+## M1 — The ledger ✅
 
 Pure Python domain + Postgres. No API, no broker.
 
@@ -24,7 +29,7 @@ That second half is the one to record a terminal capture of.
 
 ---
 
-## M2 — The API  (~1 week)
+## M2 — The API ✅
 
 FastAPI. Auth, validation, idempotency, pagination, rate limits, errors.
 
@@ -43,7 +48,7 @@ finds it.
 
 ---
 
-## M3 — Events  (~1 week)
+## M3 — Events ✅
 
 - `outbox` written in the same transaction as every ledger write
 - Relay with `FOR UPDATE SKIP LOCKED`
@@ -61,7 +66,7 @@ inline is a genuinely unpleasant refactor.
 
 ---
 
-## M4 — Normalization  (~4 days)
+## M4 — Normalization ✅
 
 - Seed merchant dictionary + aliases, `pg_trgm` candidate search
 - Cleaning rules, blended scoring, confidence threshold, versioning
@@ -73,7 +78,7 @@ changed between versions.
 
 ---
 
-## M5 — Features and risk  (~4 days)
+## M5 — Features and risk ✅
 
 - Redis sliding windows, point-in-time correct
 - Rule engine, `fraud_signals` with the feature blob attached
@@ -89,7 +94,7 @@ than recomputed.
 
 ---
 
-## M6 — Demo  (~1 week)
+## M6 — Demo ✅
 
 This is what people actually look at. Budget real time for it.
 
@@ -105,7 +110,7 @@ else.
 
 ---
 
-## M7 — Load  (~3 days)
+## M7 — Load  (not started)
 
 - Synthetic generator: millions of events, realistic descriptor mess
 - Measure p50/p95/p99 write latency, throughput, consumer lag under load

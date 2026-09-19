@@ -1,7 +1,7 @@
 -- Schema invariant tests.
 --
 --   createdb ledgerflow_test
---   psql -d ledgerflow_test -v ON_ERROR_STOP=1 -f docs/02-schema.sql
+--   psql -d ledgerflow_test -v ON_ERROR_STOP=1 -f migrations/001_core.sql
 --   psql -d ledgerflow_test -f tests/test_schema_invariants.sql
 --
 -- Each block asserts that the DATABASE refuses something, independently of any

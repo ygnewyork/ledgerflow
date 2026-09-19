@@ -5,10 +5,10 @@ events, posts them to an immutable double-entry ledger, fans them out through a
 durable event stream, and exposes balances, analytics, and webhooks to
 developers.
 
-**Status: design phase.** The schema, domain model, API contract, and the pure
-core objects are written and tested. The API, workers, and dashboard are not
-built yet — see [`docs/05-roadmap.md`](docs/05-roadmap.md) for the milestones
-and what "done" means for each.
+**Status: running.** The ledger, API, workers, Spark jobs, and dashboard are
+built and tested — 84 tests against a real PostgreSQL, plus 14 SQL invariant
+assertions. See [Running it](#running-it) below and
+[`docs/05-roadmap.md`](docs/05-roadmap.md) for what each milestone delivered.
 
 ---
 
@@ -19,6 +19,12 @@ and what "done" means for each.
 > can be recomputed from the log.
 
 Everything below exists to defend that sentence.
+
+---
+
+![The LedgerFlow dashboard: system health tiles, a 90-day balance reconstruction
+with a time-travel slider, fraud signals, spend by category, and a ledger
+explorer showing a transaction's entries balancing.](docs/images/dashboard.png)
 
 ---
 
@@ -101,7 +107,7 @@ correct placement. See `docs/03-api.md`.
 `Σ debits = Σ credits`, per transaction, per currency — checked by a
 `DEFERRABLE INITIALLY DEFERRED` constraint trigger that fires at `COMMIT`, after
 all the entries of a transaction exist. Entries are append-only; a mistake is
-corrected with a reversing entry, never an `UPDATE`. See `docs/02-schema.sql`.
+corrected with a reversing entry, never an `UPDATE`. See `migrations/001_core.sql`.
 
 ### 4. Bitemporal balances
 
@@ -151,50 +157,101 @@ is possible at all.
 
 ---
 
+## Running it
+
+Needs PostgreSQL 16 and (optionally) Redis. Kafka is optional too — the
+`EventStream` port has a Postgres-backed implementation, so the whole platform
+runs on one database.
+
+```bash
+pip install -e ".[api,dev]"
+export LEDGERFLOW_DATABASE_URL=postgresql://localhost/ledgerflow
+
+python -m ledgerflow.cli migrate         # schema + merchant dictionary
+python -m ledgerflow.cli bootstrap       # tenant, API keys, chart of accounts
+python -m ledgerflow.cli loadgen --tenant ten_... --days 90
+python -m ledgerflow.cli worker all      # drain the pipeline once
+python -m ledgerflow.cli serve           # API + dashboard on :8000
+```
+
+Then open `http://localhost:8000/dashboard/` and paste the test key.
+
+```bash
+# post a transaction
+curl -X POST localhost:8000/v1/transactions \
+  -H "Authorization: Bearer lf_test_..." \
+  -H "Idempotency-Key: order_93842" \
+  -d '{"kind":"card_purchase","amount":8437,
+       "accounts":{"expense":"groceries","funding":"checking"},
+       "descriptor":"SQ *TST* STARBUCKS 800-782-7282 CA"}'
+
+# send it again -- same response, money moves once
+```
+
+Kafka instead of Postgres for the stream, and the Spark jobs:
+
+```bash
+export LEDGERFLOW_STREAM=kafka LEDGERFLOW_KAFKA_BROKERS=localhost:9092
+python -m ledgerflow.spark.jobs streaming --checkpoint ./_checkpoints
+python -m ledgerflow.spark.jobs backfill --source ./data/bronze
+```
+
+---
+
 ## Layout
 
 ```
+migrations/             001_core · 002_stream · 003_seed
 docs/
   01-domain-model.md    objects, invariants, posting rules, bitemporality
-  02-schema.sql         full DDL, triggers, time-travel and reconciliation queries
+  02-data-model.md      the query cookbook (DDL lives in migrations/)
   03-api.md             endpoints, the idempotency protocol, webhooks, versioning
-  04-pipeline.md        outbox, topics, consumers, normalization, features
-  05-roadmap.md         milestones with "done when" criteria
-src/ledgerflow/domain/  pure-Python core (no I/O, no framework)
-  money.py              integer minor units, currency-safe arithmetic
-  ledger.py             Account, Entry, JournalTransaction, the balance invariant
-  posting.py            event kind -> ledger entries, as a registry of rules
-tests/test_domain.py    28 tests, no dependencies required
+  04-pipeline.md        outbox, topics, consumers, normalization, Spark
+  05-roadmap.md         milestones and what each one delivered
+src/ledgerflow/
+  domain/               pure core -- money, ledger, posting rules. no I/O.
+  adapters/             psycopg pool, one transaction boundary, every SQL query
+  application/          use cases, errors, resource shapes
+  api/                  FastAPI, auth, idempotency, rate limits, versioning
+  stream/               EventStream port + Postgres and Kafka adapters
+  workers/              outbox relay, normalizer, risk, webhooks, consumer runner
+  normalization/        descriptor cleaning and merchant resolution
+  features/             window definitions shared by the online and offline paths
+  spark/                streaming + backfill jobs, point-in-time training joins
+  dashboard/static/     the operator UI -- vanilla JS, no build step
+tests/                  84 tests + 14 SQL invariant assertions
 ```
 
-The `domain/` package imports nothing from FastAPI, SQLAlchemy, or Kafka. That
-is not architecture astronomy — it is what keeps the accounting rules testable
-in milliseconds and readable by someone who has never seen this codebase.
+The `domain/` package imports nothing from FastAPI, SQLAlchemy, or Kafka, and
+`features/windows.py` is imported by both the streaming risk worker and the
+Spark jobs — so there is exactly one definition of "1h spend" in the system.
 
-```
-# domain invariants -- no dependencies needed
+```bash
+# domain invariants -- no dependencies, no database
 python3 -m unittest discover -s tests -v
 
-# schema invariants -- needs a Postgres 16 database
-createdb ledgerflow_test
-psql -d ledgerflow_test -v ON_ERROR_STOP=1 -f docs/02-schema.sql
+# everything -- needs a database
+pytest
+
+# schema invariants, straight SQL
+psql -d ledgerflow_test -f migrations/001_core.sql
 psql -d ledgerflow_test -f tests/test_schema_invariants.sql
 ```
 
-Both suites pass as of the current commit: 28 domain tests, and 14 schema
-assertions verified against PostgreSQL 16.13 — including that an unbalanced
-transaction is rejected at `COMMIT`, that entries refuse `UPDATE` and `DELETE`,
-and that a transaction cannot be reversed twice.
+The test worth reading first is
+[`tests/test_idempotency.py::test_crash_between_commit_and_response`](tests/test_idempotency.py):
+it commits a transfer, raises at the exact instant the process would die, then
+retries through the real API and asserts the money moved once.
 
 ---
 
 ## Reading order
 
-1. [`docs/01-domain-model.md`](docs/01-domain-model.md) — what the objects are and
-   which invariants they hold
-2. [`docs/02-schema.sql`](docs/02-schema.sql) — the same invariants, enforced by
-   the database
+1. [`docs/01-domain-model.md`](docs/01-domain-model.md) — the objects and the
+   invariants they hold
+2. [`migrations/001_core.sql`](migrations/001_core.sql) — the same invariants,
+   enforced by the database
 3. [`docs/03-api.md`](docs/03-api.md) — the idempotency protocol, in detail
-4. [`docs/04-pipeline.md`](docs/04-pipeline.md) — outbox, consumers, normalization
-5. [`docs/05-roadmap.md`](docs/05-roadmap.md) — build order, and the questions this
-   project should make answerable
+4. [`docs/04-pipeline.md`](docs/04-pipeline.md) — outbox, consumers, Spark
+5. [`docs/05-roadmap.md`](docs/05-roadmap.md) — what is built, what is not, and
+   the questions this project should make answerable

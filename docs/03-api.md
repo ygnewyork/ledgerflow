@@ -134,12 +134,48 @@ The `INSERT` claimed nothing. Read the existing row:
 |---|---|
 | `completed`, `request_hash` matches | `200`/`201` with the stored `response_body`, plus `Idempotent-Replay: true` |
 | `completed`, `request_hash` differs | `409 idempotency_key_reuse` — same key, different body is a client bug. Silently returning the first response would hide it. |
-| `in_progress`, lease valid | `409 request_in_flight` + `Retry-After: 1` |
-| `in_progress`, lease expired | Reclaim it (the owner died), re-run the work |
 
 The request hash covers method, path, and a canonicalized body — keys sorted,
-whitespace normalized — so that a semantically identical retry from a different
-JSON serializer still matches.
+whitespace normalized, **computed from the validated model rather than the raw
+bytes**, so a retry that omits `currency` matches one that sends `"usd"`
+explicitly, while a genuinely different request does not.
+
+### What happens to a *concurrent* duplicate
+
+This is the consequence of putting the claim inside the work's transaction, and
+it is worth stating precisely because it is not what you would guess.
+
+A second request carrying the same key, arriving while the first is still
+running, **does not see an `in_progress` row** — the first transaction has not
+committed, so its row is invisible. The second request tries to `INSERT` the
+same key and *blocks* on the first transaction's uncommitted row.
+
+That blocking is correct, and better than failing fast:
+
+- If the first request commits, the waiter's `INSERT` conflicts, it reads a
+  `completed` row, and it replays the stored response.
+- If the first request rolls back, the waiter's `INSERT` succeeds and it does
+  the work itself.
+
+Either way the client gets the right answer, and the money moves exactly once.
+What is *not* acceptable is waiting forever behind a slow request while holding
+a connection — so the claim runs under a `lock_timeout`:
+
+```sql
+SELECT set_config('lock_timeout', '3000ms', true);
+```
+
+A duplicate that waits longer than that gets `409 request_in_flight` with
+`Retry-After: 1`, turning an unbounded wait into a bounded, retryable error.
+
+The `status` and `lease_expires_at` columns remain on the table, and the code
+still handles a visible `in_progress` row — but in this single-transaction
+design that state is **unreachable by construction**: a crash rolls back both
+the claim and the work, and a commit always carries `completed`. The branch is
+a guard for a future two-transaction variant, not a path the API reaches on its
+own. Both behaviours are pinned by tests
+(`test_concurrent_duplicate_waits_then_replays`,
+`test_lock_timeout_turns_an_unbounded_wait_into_a_409`).
 
 ### What is *not* idempotent
 
