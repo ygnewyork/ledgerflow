@@ -8,14 +8,24 @@
 # Everything runs inside .venv, so there is no `python` vs `python3` and no
 # `pip install` into the system interpreter.
 
+# A local .env, when present, wins over the defaults below. Its lines are
+# `export NAME=value` with no quotes, which both GNU Make and a shell `source`
+# understand -- so one file configures `make`, a bare `python -m ledgerflow`,
+# and a fresh terminal identically. Quoting the value would work in the shell
+# and leave literal quote marks in Make, so don't.
+-include .env
+
 VENV    := .venv
 PY      := $(VENV)/bin/python
 PIP     := $(VENV)/bin/pip
-DB      ?= postgresql://$(USER)@localhost:5432/ledgerflow
+# $(USER) is unset in some non-login shells and cron-like environments, which
+# silently produces postgresql://@localhost/... -- a URL with no role at all.
+WHOAMI  := $(or $(USER),$(shell id -un))
+DB      ?= postgresql://$(WHOAMI)@localhost:5432/ledgerflow
 
 export LEDGERFLOW_DATABASE_URL ?= $(DB)
 
-.PHONY: help setup demo serve test lint clean db-create doctor
+.PHONY: help setup demo serve test lint clean db-create doctor env brew-pg-5433
 
 help:
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -27,6 +37,15 @@ $(VENV):
 setup: $(VENV)  ## create the virtualenv and install the project
 	$(PIP) install --quiet -e ".[api,dev]"
 	@echo "ready. next: make db-create && make demo"
+
+env:  ## write .env so a new terminal does not need the exports again
+	@printf 'export LEDGERFLOW_DATABASE_URL=%s\n' "$(LEDGERFLOW_DATABASE_URL)" > .env
+	@if command -v brew >/dev/null 2>&1 && [ -d "$$(brew --prefix postgresql@16 2>/dev/null)" ]; then \
+		printf 'export PATH=%s/bin:$$PATH\n' "$$(brew --prefix postgresql@16)" >> .env; fi
+	@echo "wrote .env:"
+	@sed 's/^/  /' .env
+	@echo
+	@echo "make targets read it automatically. For your own shell:  source .env"
 
 db-create:  ## create the database named in LEDGERFLOW_DATABASE_URL
 	@# Must go through the URL, not bare `createdb`: createdb defaults to port
@@ -55,9 +74,12 @@ brew-pg-5433:  ## move Homebrew's postgres to 5433, leaving another install on 5
 	grep -q "^port = 5433" "$$conf" || printf "\nport = 5433\n" >> "$$conf"; \
 	brew services start postgresql@16; \
 	echo; \
-	echo "Homebrew postgres now on 5433. Add these to your shell:"; \
-	echo "  export PATH=\"$$(brew --prefix postgresql@16)/bin:\$$PATH\""; \
-	echo "  export LEDGERFLOW_DATABASE_URL=\"postgresql://$(USER)@localhost:5433/ledgerflow\""
+	printf 'export LEDGERFLOW_DATABASE_URL=postgresql://%s@localhost:5433/ledgerflow\n' "$(WHOAMI)" > .env; \
+	printf 'export PATH=%s/bin:$$PATH\n' "$$(brew --prefix postgresql@16)" >> .env; \
+	echo "Homebrew postgres is now on 5433, and .env records it:"; \
+	sed 's/^/  /' .env; \
+	echo; \
+	echo "make reads .env on its own. For your own shell:  source .env"
 
 demo: setup  ## migrate, bootstrap, generate 90 days of history, drain the pipeline
 	$(PY) -m ledgerflow.cli migrate

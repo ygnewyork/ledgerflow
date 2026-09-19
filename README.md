@@ -209,6 +209,9 @@ make serve
 a clean macOS does not have. `make demo` prints the test API key; paste it into
 the dashboard at `http://localhost:8000/dashboard/`.
 
+`make brew-pg-5433` and `make env` both write a `.env`, which `make` reads
+automatically — so the setup survives closing the terminal. Nothing to re-export.
+
 Anything unclear: `make doctor` prints which Python, which `psql`, which server
 is actually listening, and whether more than one Postgres is installed.
 
@@ -217,6 +220,35 @@ usually wants `postgres` and a password), point the app at it:
 
 ```
 export LEDGERFLOW_DATABASE_URL="postgresql://postgres:YOURPASSWORD@localhost:5432/ledgerflow"
+```
+
+### Coming back to it later
+
+A new terminal needs no setup, because `.env` holds the configuration:
+
+```
+cd ledgerflow
+make doctor
+make serve
+```
+
+If `doctor` says no server is listening, the database just is not running yet:
+
+```
+brew services start postgresql@16
+```
+
+To start over from an empty ledger:
+
+```
+make demo
+```
+
+For your own shell — running `python -m ledgerflow.cli ...` directly rather
+than through `make` — load the same file:
+
+```
+source .env
 ```
 
 ### Linux, or with Docker
