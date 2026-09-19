@@ -22,3 +22,6 @@ data/
 .devenv
 data/
 _checkpoints/
+
+.bootstrap.json
+.env

@@ -159,22 +159,55 @@ is possible at all.
 
 ## Running it
 
-Needs PostgreSQL 16 and (optionally) Redis. Kafka is optional too — the
-`EventStream` port has a Postgres-backed implementation, so the whole platform
-runs on one database.
+Needs **Python 3.11+** and **PostgreSQL 16**. Redis is optional; Kafka is
+optional too — the `EventStream` port has a Postgres-backed implementation, so
+the whole platform runs on one database.
+
+### macOS
 
 ```bash
-pip install -e ".[api,dev]"
-export LEDGERFLOW_DATABASE_URL=postgresql://localhost/ledgerflow
+brew install python postgresql@16 redis     # redis optional
+brew services start postgresql@16
+brew services start redis                   # optional
 
-python -m ledgerflow.cli migrate         # schema + merchant dictionary
-python -m ledgerflow.cli bootstrap       # tenant, API keys, chart of accounts
-python -m ledgerflow.cli loadgen --tenant ten_... --days 90
-python -m ledgerflow.cli worker all      # drain the pipeline once
-python -m ledgerflow.cli serve           # API + dashboard on :8000
+git clone https://github.com/ygnewyork/ledgerflow && cd ledgerflow
+make setup          # creates .venv and installs the project
+make db-create      # createdb ledgerflow
+make demo           # migrate, bootstrap, 90 days of history, drain the pipeline
+make serve          # http://localhost:8000/dashboard/
 ```
 
-Then open `http://localhost:8000/dashboard/` and paste the test key.
+`make demo` prints the test API key at the end; paste it into the dashboard.
+
+Stuck? `make doctor` reports what is and is not running.
+
+### Linux, or with Docker
+
+```bash
+docker compose up -d        # postgres + redis
+cp .env.example .env && source .env
+make setup && make demo && make serve
+```
+
+### Without make
+
+There is no bare `python` or `pip` on a clean macOS — those names only exist
+inside a virtualenv, which is why `make setup` creates one:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[api,dev]"
+
+export LEDGERFLOW_DATABASE_URL="postgresql://$(whoami)@localhost:5432/ledgerflow"
+
+python -m ledgerflow.cli migrate      # schema + merchant dictionary
+python -m ledgerflow.cli bootstrap    # tenant, API keys, chart of accounts
+python -m ledgerflow.cli loadgen --days 90
+python -m ledgerflow.cli worker all   # drain the pipeline once
+python -m ledgerflow.cli serve
+```
+
+### Poking at it
 
 ```bash
 # post a transaction
@@ -185,8 +218,13 @@ curl -X POST localhost:8000/v1/transactions \
        "accounts":{"expense":"groceries","funding":"checking"},
        "descriptor":"SQ *TST* STARBUCKS 800-782-7282 CA"}'
 
-# send it again -- same response, money moves once
+# send it again -- identical response, Idempotent-Replay: true, money moves once
 ```
+
+- `http://localhost:8000/docs` — the generated OpenAPI browser, all 22 routes
+- `make test` — 84 tests against the real database
+- `python -m ledgerflow.cli reconcile` — recompute every balance from entries
+  and diff against the snapshot cache
 
 Kafka instead of Postgres for the stream, and the Spark jobs:
 

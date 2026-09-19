@@ -96,10 +96,44 @@ def cmd_worker(args: argparse.Namespace) -> None:
     run_worker(args.name, once=args.once)
 
 
+def _default_tenant() -> str:
+    """The newest tenant with a complete chart of accounts.
+
+    Newest-overall is the obvious rule and the wrong one: a test run leaves
+    tenants holding a handful of accounts, and loadgen then fails deep inside a
+    posting with "no account 'food'". Requiring the full chart picks a
+    bootstrapped tenant, and names it so the choice is visible.
+    """
+    required = [external for _, _, external, _ in DEFAULT_ACCOUNTS]
+    with read_only() as uow:
+        row = uow.one(
+            """
+            SELECT t.id, t.name
+              FROM tenants t
+             WHERE (SELECT count(*) FROM accounts a
+                     WHERE a.tenant_id = t.id AND a.mode = 'test'
+                       AND a.external_id = ANY(%s)) = %s
+             ORDER BY t.created_at DESC
+             LIMIT 1
+            """,
+            (required, len(required)),
+        )
+    if row is None:
+        raise SystemExit(
+            "no bootstrapped tenant found -- run `python -m ledgerflow.cli bootstrap` "
+            "first, or pass --tenant explicitly"
+        )
+    print(f"using tenant {row['id']} ({row['name']})")
+    return row["id"]
+
+
 def cmd_loadgen(args: argparse.Namespace) -> None:
     from .loadgen import generate
 
-    generate(tenant_id=args.tenant, count=args.count, days=args.days, seed=args.seed)
+    generate(
+        tenant_id=args.tenant or _default_tenant(),
+        count=args.count, days=args.days, seed=args.seed,
+    )
 
 
 def cmd_reconcile(args: argparse.Namespace) -> None:
@@ -134,7 +168,8 @@ def main(argv: list[str] | None = None) -> None:
     p.set_defaults(func=cmd_worker)
 
     p = sub.add_parser("loadgen")
-    p.add_argument("--tenant", required=True); p.add_argument("--count", type=int, default=1000)
+    p.add_argument("--tenant", help="defaults to the most recent bootstrapped tenant")
+    p.add_argument("--count", type=int, default=1000)
     p.add_argument("--days", type=int, default=90); p.add_argument("--seed", type=int, default=17)
     p.set_defaults(func=cmd_loadgen)
 
