@@ -165,21 +165,42 @@ the whole platform runs on one database.
 
 ### macOS
 
-```bash
-brew install python postgresql@16 redis     # redis optional
-brew services start postgresql@16
-brew services start redis                   # optional
+Paste these **one line at a time** — an interactive zsh does not strip `#`
+comments, so a trailing comment becomes an argument.
 
-git clone https://github.com/ygnewyork/ledgerflow && cd ledgerflow
-make setup          # creates .venv and installs the project
-make db-create      # createdb ledgerflow
-make demo           # migrate, bootstrap, 90 days of history, drain the pipeline
-make serve          # http://localhost:8000/dashboard/
+```
+brew install python postgresql@16 redis
+brew services start postgresql@16
+brew services start redis
 ```
 
-`make demo` prints the test API key at the end; paste it into the dashboard.
+Already have a PostgreSQL from the EDB installer (`/Library/PostgreSQL/...`)?
+You do not need Homebrew's. Its binaries sit ahead of Homebrew's on `PATH` and
+shadow them, which is the usual cause of "I started 16 but psql says 18".
+Any server 16 or newer works — `make doctor` reports which one is answering.
 
-Stuck? `make doctor` reports what is and is not running.
+```
+git clone https://github.com/ygnewyork/ledgerflow
+cd ledgerflow
+make setup
+make db-create
+make demo
+make serve
+```
+
+`make setup` builds `.venv` — that is what gives you `python` and `pip`, which
+a clean macOS does not have. `make demo` prints the test API key; paste it into
+the dashboard at `http://localhost:8000/dashboard/`.
+
+Anything unclear: `make doctor` prints which Python, which `psql`, which server
+is actually listening, and whether more than one Postgres is installed.
+
+If the running server does not accept your macOS username (an EDB install
+usually wants `postgres` and a password), point the app at it:
+
+```
+export LEDGERFLOW_DATABASE_URL="postgresql://postgres:YOURPASSWORD@localhost:5432/ledgerflow"
+```
 
 ### Linux, or with Docker
 
