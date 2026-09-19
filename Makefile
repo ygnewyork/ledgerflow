@@ -8,12 +8,17 @@
 # Everything runs inside .venv, so there is no `python` vs `python3` and no
 # `pip install` into the system interpreter.
 
-# A local .env, when present, wins over the defaults below. Its lines are
-# `export NAME=value` with no quotes, which both GNU Make and a shell `source`
-# understand -- so one file configures `make`, a bare `python -m ledgerflow`,
-# and a fresh terminal identically. Quoting the value would work in the shell
-# and leave literal quote marks in Make, so don't.
--include .env
+# A local .env, when present, wins over the defaults below.
+#
+# Only LEDGERFLOW_* assignments are taken, and that filter is load-bearing
+# rather than tidy. Including the file wholesale lets a `PATH=` line through,
+# and Make expands `$$PATH` as `$$(P)ATH` -- an undefined single-letter
+# variable followed by "ATH" -- so PATH silently becomes ".../bin:ATH" and
+# every command in every recipe disappears: awk, grep, tee, python3, all of it,
+# with nothing pointing at the cause.
+ifneq (,$(wildcard .env))
+$(foreach kv,$(shell sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}\(LEDGERFLOW_[A-Z_]*\)=\(.*\)$$/\2=\3/p' .env),$(eval $(kv)))
+endif
 
 VENV    := .venv
 PY      := $(VENV)/bin/python
@@ -21,6 +26,12 @@ PIP     := $(VENV)/bin/pip
 # $(USER) is unset in some non-login shells and cron-like environments, which
 # silently produces postgresql://@localhost/... -- a URL with no role at all.
 WHOAMI  := $(or $(USER),$(shell id -un))
+
+# Resolve the client binaries here rather than depending on PATH order. On a
+# Mac with two Postgres installs, whichever one is first on PATH is usually not
+# the one we just started.
+BREW_PG := $(shell brew --prefix postgresql@16 2>/dev/null)
+PSQL    := $(if $(wildcard $(BREW_PG)/bin/psql),$(BREW_PG)/bin/psql,psql)
 DB      ?= postgresql://$(WHOAMI)@localhost:5432/ledgerflow
 
 export LEDGERFLOW_DATABASE_URL ?= $(DB)
@@ -40,8 +51,6 @@ setup: $(VENV)  ## create the virtualenv and install the project
 
 env:  ## write .env so a new terminal does not need the exports again
 	@printf 'export LEDGERFLOW_DATABASE_URL=%s\n' "$(LEDGERFLOW_DATABASE_URL)" > .env
-	@if command -v brew >/dev/null 2>&1 && [ -d "$$(brew --prefix postgresql@16 2>/dev/null)" ]; then \
-		printf 'export PATH=%s/bin:$$PATH\n' "$$(brew --prefix postgresql@16)" >> .env; fi
 	@echo "wrote .env:"
 	@sed 's/^/  /' .env
 	@echo
@@ -56,7 +65,7 @@ db-create:  ## create the database named in LEDGERFLOW_DATABASE_URL
 	maint="$${url%/*}/postgres"; \
 	if [ -z "$$dbname" ] || [ "$$dbname" = "$$url" ]; then \
 		echo "could not read a database name out of $$url"; exit 1; fi; \
-	out=$$(PGCONNECT_TIMEOUT=5 psql -w "$$maint" \
+	out=$$(PGCONNECT_TIMEOUT=5 $(PSQL) -w "$$maint" \
 		-c "create database \"$$dbname\"" 2>&1); \
 	case "$$out" in \
 		CREATE*)              echo "created database '$$dbname'" ;; \
@@ -75,7 +84,6 @@ brew-pg-5433:  ## move Homebrew's postgres to 5433, leaving another install on 5
 	brew services start postgresql@16; \
 	echo; \
 	printf 'export LEDGERFLOW_DATABASE_URL=postgresql://%s@localhost:5433/ledgerflow\n' "$(WHOAMI)" > .env; \
-	printf 'export PATH=%s/bin:$$PATH\n' "$$(brew --prefix postgresql@16)" >> .env; \
 	echo "Homebrew postgres is now on 5433, and .env records it:"; \
 	sed 's/^/  /' .env; \
 	echo; \
@@ -124,7 +132,7 @@ doctor:  ## check what is installed, what is running, and what shadows what
 	@# -w so psql never prompts: an interactive password prompt inside a
 	@# diagnostic hangs the terminal and makes "unreachable" indistinguishable
 	@# from "reachable but needs credentials" -- which are opposite problems.
-	@out=$$(PGCONNECT_TIMEOUT=3 psql -w "$(LEDGERFLOW_DATABASE_URL)" \
+	@out=$$(PGCONNECT_TIMEOUT=3 $(PSQL) -w "$(LEDGERFLOW_DATABASE_URL)" \
 		-tAc 'select version()' 2>&1); \
 	case "$$out" in \
 		PostgreSQL*) echo "$$out" | cut -d, -f1 ;; \
@@ -132,7 +140,7 @@ doctor:  ## check what is installed, what is running, and what shadows what
 			echo "nothing listening -- $(LEDGERFLOW_DATABASE_URL)"; \
 			echo "             start one:  brew services start postgresql@16" ;; \
 		*) \
-			probe=$$(PGCONNECT_TIMEOUT=3 psql -w \
+			probe=$$(PGCONNECT_TIMEOUT=3 $(PSQL) -w \
 				"postgresql://postgres@localhost:5432/postgres" \
 				-tAc 'select version()' 2>&1); \
 			case "$$probe" in \
@@ -142,7 +150,7 @@ doctor:  ## check what is installed, what is running, and what shadows what
 			echo "             $$(echo "$$out" | head -1)" ;; \
 	esac
 	@printf "database     "
-	@out=$$(PGCONNECT_TIMEOUT=3 psql -w "$(LEDGERFLOW_DATABASE_URL)" -c 'select 1' 2>&1); \
+	@out=$$(PGCONNECT_TIMEOUT=3 $(PSQL) -w "$(LEDGERFLOW_DATABASE_URL)" -c 'select 1' 2>&1); \
 	case "$$out" in \
 		*"1 row"*|*"(1 row)"*) echo "ready -- $(LEDGERFLOW_DATABASE_URL)" ;; \
 		*role*"does not exist"*) \
