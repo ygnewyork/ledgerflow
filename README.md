@@ -59,7 +59,7 @@ Everything below exists to defend that sentence.
                   ▼                                  ▼
          normalized_transactions             fraud_signals
                   │
-                  └──────────► Parquet / DuckDB ──► analytics + backfills
+                  └──────────► Delta Lake / Spark ──► features + backfills
 ```
 
 The consumers are all **derived state**. If any of them is wrong, you delete its

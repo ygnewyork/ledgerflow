@@ -77,11 +77,15 @@ changed between versions.
 
 - Redis sliding windows, point-in-time correct
 - Rule engine, `fraud_signals` with the feature blob attached
-- Parquet export + DuckDB aggregate queries
+- Spark Structured Streaming job: watermarked event-time windows into Delta
+- The same window function reused, unchanged, for the historical backfill
+- `foreachBatch` + Delta `MERGE` so a replayed micro-batch is a no-op
 
 **Done when:** replaying the same event stream twice produces byte-identical
-feature values — which is the actual test for point-in-time correctness, and
-fails immediately if anything in the path calls `now()`.
+feature values — the actual test for point-in-time correctness, and one that
+fails immediately if anything in the path calls `now()`. Plus: kill the Spark
+job mid-window, restart it, and show from the checkpoint that it resumed rather
+than recomputed.
 
 ---
 
@@ -123,7 +127,12 @@ subsystems that each mostly work. If you have two weeks, that is the project.
 Two adjustments to the obvious plan, both worth making:
 
 - **Outbox from day one** (behind an interface), not when Kafka arrives.
-- **DuckDB, not Spark**, unless you have a concrete reason. See `04-pipeline.md`.
+- **Spark earns its place through the shared streaming/batch code path**, not
+  through data volume. Write `account_features()` once and call it from both the
+  streaming job and the backfill; that is the thing to demo. If you cannot point
+  at what Spark does that a single node could not, an interviewer who works on
+  Spark will find the bottom of the claim in two questions. See
+  `04-pipeline.md`.
 
 ---
 
@@ -143,11 +152,13 @@ and more specific:
 > Built an event-driven financial platform on FastAPI, Postgres, and Redpanda:
 > an append-only double-entry ledger with balance invariants enforced by
 > deferred database constraints, crash-safe idempotent APIs, and a transactional
-> outbox giving at-least-once delivery with consumer-side deduplication.
-> Added versioned transaction normalization, point-in-time-correct streaming
-> features, signed webhooks with backoff and dead-letter redrive, and bitemporal
-> balance reconstruction. Load tested to N transactions/sec (p99 write latency
-> Xms).
+> outbox giving at-least-once delivery with consumer-side deduplication. Built
+> the analytics tier on Spark Structured Streaming and Delta Lake, with
+> watermarked event-time windows, checkpoint-recoverable state, and one feature
+> definition shared by the streaming and backfill paths for point-in-time
+> correctness. Added versioned transaction normalization, signed webhooks with
+> backoff and dead-letter redrive, and bitemporal balance reconstruction. Load
+> tested to N transactions/sec (p99 write latency Xms).
 
 Every clause there is a question you can answer for twenty minutes, and none of
 them is a claim that falls apart under one follow-up.
@@ -168,3 +179,9 @@ them is a claim that falls apart under one follow-up.
 - How do you fix a transaction posted with the wrong amount last Tuesday?
 - `effective_at` vs `recorded_at` — when do they diverge and who cares?
 - Why not put the ledger in Kafka and make Postgres the projection?
+- Why Spark, when one machine could handle this volume?
+- What does `withWatermark("effective_at", "2 hours")` actually do to state, and
+  what happens to an event that arrives three hours late?
+- What is in a Structured Streaming checkpoint, and why is the path versioned?
+- Your streaming features and your training features are computed by the same
+  function — why does that matter, and what breaks if they are not?

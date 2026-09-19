@@ -227,32 +227,202 @@ signal stream next to the money stream.
 
 ---
 
-## Analytics
+## Analytics and the offline pipeline
 
-`ledger.events.v1` is continuously written to Parquet, partitioned by date.
-DuckDB queries it directly for the dashboard's aggregates and for ad-hoc
-analysis.
-
-**DuckDB over Spark, deliberately.** At this data volume Spark is ceremony:
-a cluster to manage, a JVM to tune, minutes of startup to answer a question
-DuckDB answers in 200ms on a laptop. Choosing the smaller tool and being able to
-say *why* reads as judgment. Choosing Spark to have the word on a résumé reads
-as the opposite — and an interviewer who works on Spark will find the bottom of
-that claim in two questions.
-
-The medallion layering is still worth keeping, because the layering is the idea,
-not the engine:
+Spark Structured Streaming into Delta Lake, laid out in medallion tiers:
 
 ```
-raw_transactions         ← immutable, exactly as received
-      ↓
-normalized_transactions  ← merchant + category resolved, versioned
-      ↓
-account_features         ← windowed aggregates, point-in-time correct
-      ↓
-fraud_features           ← model-ready inputs
+  ledger.events.v1 ──┐
+                     ├──► BRONZE   raw_transactions        append-only, exactly as received
+  transactions.      │              ledger_entries
+  normalized.v1 ─────┘
+                            │
+                            ▼
+                     SILVER  normalized_transactions   merchant + category, versioned
+                            │
+                            ▼
+                     GOLD    account_features          windowed, point-in-time correct
+                             merchant_features
+                             fraud_features            model-ready
 ```
 
-If throughput ever genuinely outgrows a single node, the same layering ports to
-Spark Structured Streaming without a redesign. That is the argument for building
-it this way now.
+### Why Spark here and not a single-node engine
+
+The honest case has three parts, and none of them is throughput — at MVP volume
+one machine would keep up.
+
+**1. One code path for streaming and backfill.** Structured Streaming and batch
+share the DataFrame API, so the aggregation that runs continuously and the
+backfill that rebuilds two years of history are *the same function*, called with
+a different reader:
+
+```python
+def account_features(txns: DataFrame) -> DataFrame:
+    """Used by the streaming job and the backfill job, unchanged."""
+    return (
+        txns
+        .withWatermark("effective_at", "2 hours")
+        .groupBy(
+            F.col("account_id"),
+            F.window(F.col("effective_at"), "1 hour", "5 minutes"),
+        )
+        .agg(
+            F.sum("amount_minor").alias("spend_minor"),
+            F.count("*").alias("txn_count"),
+            F.approx_count_distinct("merchant_id").alias("distinct_merchants"),
+            F.max("amount_minor").alias("max_amount_minor"),
+        )
+    )
+
+# streaming
+account_features(spark.readStream.format("kafka")...load())
+# backfill over all of history, same function
+account_features(spark.read.format("delta").table("bronze.normalized_transactions"))
+```
+
+Two implementations of the same window logic will drift, and the drift shows up
+as a model that scored well offline and fails online. One function cannot drift.
+
+**2. Watermarks are real late-data handling, not a `WHERE` clause.** This is the
+streaming counterpart of the `effective_at` / `recorded_at` split in the ledger:
+
+```python
+.withWatermark("effective_at", "2 hours")
+```
+
+Spark tracks the maximum event time it has seen, subtracts the delay threshold,
+and uses that watermark to decide when a window is final. Two consequences worth
+being able to state:
+
+- Aggregation state for closed windows is **evicted**, so memory is bounded
+  instead of growing forever with the number of accounts.
+- Events arriving later than the watermark are **dropped from the aggregate**.
+  They are not silently lost — route them to a `late_arrivals` Delta table and
+  alert on the rate, because a rising late-arrival count means the watermark is
+  too tight or an upstream producer is lagging.
+
+Picking `2 hours` is a tradeoff you own: longer tolerates more lateness and
+holds more state; shorter is cheaper and drops more. Say which you chose and why.
+
+**3. Recoverable state.** The checkpoint directory holds both the Kafka offsets
+*and* the serialized aggregation state, so a killed job resumes mid-window
+rather than recomputing from scratch:
+
+```python
+.option("checkpointLocation", "s3://ledgerflow/_checkpoints/account_features_v1")
+```
+
+The `_v1` suffix matters. A checkpoint is coupled to the query plan; change the
+aggregation shape and Spark will either refuse to start or resume with state it
+cannot interpret. Versioning the path makes a breaking change an explicit
+decision — new path, replay from the retention window — instead of a 3am
+incident.
+
+### Idempotent writes
+
+At-least-once again, one layer up. `foreachBatch` plus a Delta `MERGE` keyed on
+the window makes a re-run of the same micro-batch a no-op:
+
+```python
+def upsert_features(batch_df: DataFrame, batch_id: int) -> None:
+    (
+        DeltaTable.forName(spark, "gold.account_features").alias("t")
+        .merge(
+            batch_df.alias("s"),
+            "t.account_id = s.account_id AND t.window_end = s.window_end",
+        )
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute()
+    )
+
+(
+    account_features(stream)
+    .select("account_id", F.col("window.end").alias("window_end"), "*")
+    .writeStream
+    .foreachBatch(upsert_features)
+    .option("checkpointLocation", CHECKPOINT)
+    .outputMode("update")
+    .trigger(processingTime="30 seconds")
+    .start()
+)
+```
+
+This is the same idea as `processed_events` in the consumers and the idempotency
+key in the API: the write path is replay-safe, so redelivery is boring. Notice
+the pattern repeating at all three layers — that repetition is the system's
+actual thesis.
+
+### Point-in-time correct training sets
+
+The rule from the online path applies with more force offline: **a feature must
+be computed only from data that existed at decision time.** Spark has no native
+as-of join, so it is a windowed row pick, and the `<=` is where leakage would
+otherwise enter:
+
+```python
+joined = (
+    labels.alias("l")
+    .join(features.alias("f"), "account_id")
+    .where(F.col("f.window_end") <= F.col("l.decision_at"))   # <- the whole ballgame
+)
+
+training = (
+    joined
+    .withColumn(
+        "rn",
+        F.row_number().over(
+            Window.partitionBy("l.label_id").orderBy(F.col("f.window_end").desc())
+        ),
+    )
+    .where("rn = 1")
+    .drop("rn")
+)
+```
+
+Replace `f.window_end <= l.decision_at` with an unconstrained join and you get a
+model that reads the future, scores beautifully in backtest, and fails in
+production. It is the single most common way a feature pipeline is silently
+wrong, and being able to point at the line that prevents it is worth more than
+any amount of pipeline diagramming.
+
+### Delta gives the analytics tier the ledger's own property
+
+```sql
+SELECT * FROM gold.account_features VERSION AS OF 42;
+SELECT * FROM gold.account_features TIMESTAMP AS OF '2026-09-01';
+```
+
+The ledger is bitemporal; Delta time travel gives the derived tables the same
+ability. "Why did the dashboard show a different number on September 1" becomes
+a query against both layers rather than a shrug.
+
+It also makes a normalizer upgrade safe to evaluate: ship v4, replay bronze into
+a new silver version, and diff v4 against v3 on identical inputs before any
+consumer sees it.
+
+### The costs, stated plainly
+
+- A JVM, a cluster, and tens of seconds of job startup — so Spark is wrong for
+  anything on the request path. Nothing user-facing waits on it.
+- Checkpoints are coupled to query plans (hence `_v1`).
+- Micro-batch output produces many small files; Delta `OPTIMIZE` and
+  auto-compaction are maintenance you now own.
+- At current volume a single node would suffice. Spark is here for the shared
+  streaming/batch code path, watermarked recoverable state, and Delta's
+  versioned tables — not because the data is big.
+
+That last sentence is the answer to *"why Spark?"*, and it is a much better one
+than naming the volume you do not have.
+
+**Local development:** Spark runs in `docker-compose` with `delta-spark`; no
+Databricks account is needed. The same jobs run on Databricks unchanged if you
+want to demo them there, since Structured Streaming plus Delta is exactly what
+that platform's streaming tables and pipelines are built on.
+
+### Serving the dashboard
+
+Gold tables are small and pre-aggregated, so the dashboard queries them
+directly. Spark is not in the read path — it produces the tables, and the API
+reads them. Keeping the interactive path off the cluster is what keeps the demo
+responsive.

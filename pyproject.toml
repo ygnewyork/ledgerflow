@@ -18,7 +18,7 @@ api = [
     "redis>=5.2",
 ]
 stream = ["confluent-kafka>=2.6"]
-analytics = ["duckdb>=1.1", "pyarrow>=18.0"]
+analytics = ["pyspark>=3.5", "delta-spark>=3.2", "pyarrow>=18.0"]
 dev = ["pytest>=8.3", "hypothesis>=6.115", "ruff>=0.7", "mypy>=1.13", "testcontainers>=4.8"]
 
 [build-system]
