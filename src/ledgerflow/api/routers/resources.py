@@ -413,6 +413,42 @@ def retry_delivery(delivery_id: str, ctx: TenantContext = Depends(context)) -> d
 # ---------------------------------------------------------------------------
 
 
+@router.get("/me")
+def whoami(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
+    """Who this key is, and how much it can see.
+
+    Exists because a cached API key pointing at a stale tenant looks exactly
+    like a broken dashboard: every panel renders, every number is real, and
+    all of it belongs to a different set of books. Naming the tenant and its
+    size on screen turns that from a mystery into a glance.
+    """
+    with read_only() as uow:
+        tenant = uow.one("SELECT * FROM tenants WHERE id = %s", (ctx.tenant_id,))
+        key = uow.one("SELECT key_prefix, key_last4 FROM api_keys WHERE id = %s",
+                      (ctx.api_key_id,))
+        counts = uow.one(
+            """
+            SELECT (SELECT count(*) FROM accounts a
+                     WHERE a.tenant_id = %(t)s AND a.mode = %(m)s)::int AS accounts,
+                   (SELECT count(*) FROM transactions x
+                     WHERE x.tenant_id = %(t)s AND x.mode = %(m)s)::int AS transactions,
+                   (SELECT max(x.effective_at) FROM transactions x
+                     WHERE x.tenant_id = %(t)s AND x.mode = %(m)s) AS newest
+            """,
+            {"t": ctx.tenant_id, "m": ctx.mode},
+        )
+    return {
+        "object": "connection",
+        "tenant": ctx.tenant_id,
+        "tenant_name": tenant["name"] if tenant else None,
+        "mode": ctx.mode,
+        "key": f"{key['key_prefix']}...{key['key_last4']}" if key else None,
+        "accounts": counts["accounts"],
+        "transactions": counts["transactions"],
+        "newest_transaction": int(counts["newest"].timestamp()) if counts["newest"] else None,
+    }
+
+
 @router.get("/health")
 def health(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     with read_only() as uow:

@@ -12,6 +12,7 @@
   <h1>LedgerFlow</h1>
   <span class="sub" id="mode-line">real-time financial event platform</span>
   <span class="spacer"></span>
+  <button id="connection" class="conn" title="Which books this key reads. Click to change key."></button>
   <select id="account-picker" aria-label="Account"></select>
   <select id="window-picker" aria-label="Time window">
     <option value="30">30 days</option>
@@ -44,6 +45,12 @@
     <div class="legend" id="accounts-legend"></div>
     <svg id="accounts-chart" class="chart" role="img"
          aria-label="Account balances over time"></svg>
+    <div class="travel">
+      <input type="range" id="travel" min="0" max="100" value="100"
+             aria-label="Rewind to a point in history">
+      <span class="readout" id="travel-readout">&mdash;</span>
+      <button id="travel-live" class="live-btn" hidden>&#9654;&#65038; Back to now</button>
+    </div>
   </section>
 
   <section class="card col-4" aria-labelledby="networth-h">
@@ -75,23 +82,8 @@
     <svg id="category-chart" class="chart" role="img" aria-label="Spend by category"></svg>
   </section>
 
-  <section class="card col-8" aria-labelledby="balance-h">
-    <h2 id="balance-h">Account balance</h2>
-    <p class="hint">
-      Reconstructed by folding immutable ledger entries. Drag the slider to rewind:
-      the balance is recomputed from entries at that instant, not interpolated.
-    </p>
-    <svg id="balance-chart" class="chart" role="img" aria-label="Account balance over time"></svg>
-    <div class="travel">
-      <input type="range" id="travel" min="0" max="100" value="100" aria-label="Rewind to a point in history">
-      <span class="readout" id="travel-readout">&mdash;</span>
-      <button id="travel-live" class="live-btn" hidden>&#9654;&#65038; Back to now</button>
-      <button class="toggle-table" id="balance-table-toggle" aria-expanded="false">Show as table</button>
-    </div>
-    <div class="scroll" id="balance-table" hidden></div>
-  </section>
 
-  <section class="card col-4" aria-labelledby="signals-h">
+  <section class="card col-6" aria-labelledby="signals-h">
     <h2 id="signals-h">Fraud signals</h2>
     <p class="hint">Emitted, never enforced. Nothing here blocked a posting.</p>
     <div class="scroll" id="signals"></div>

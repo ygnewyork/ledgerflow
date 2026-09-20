@@ -312,3 +312,17 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
 
 /* Stacked tiles for the narrow Position column. */
 .tiles--stack { grid-template-columns: 1fr; }
+
+/* Which books this key reads. A cached key pointing at a stale tenant renders
+   a perfectly healthy dashboard full of somebody else's numbers, so the
+   connection is stated rather than assumed. */
+.conn {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px; padding: 5px 10px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-secondary); cursor: pointer;
+}
+.conn:hover { border-color: var(--series-1); }
+.conn-key { font-family: var(--mono); color: var(--text-primary); }
+.conn-meta { color: var(--text-muted); }
+@media (max-width: 760px) { .conn-meta { display: none; } }

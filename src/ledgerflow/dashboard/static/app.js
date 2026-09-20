@@ -21,6 +21,8 @@ const state = {
   balanceSeries: [],      // asset & liability accounts over time
   spendSeries: [],        // cumulative spend per category
   windowDays: 180,
+  charts: {},             // chart geometry, so the marker can be placed cheaply
+  connection: null,
 };
 
 // Deposits and transfers carry no merchant descriptor, so the feed names them
@@ -244,6 +246,10 @@ function drawLines(svgId, series, opts = {}) {
     x: W - m.right + 10, y: l.y + 4, class: "series-label", fill: l.colour,
   }, l.text)));
 
+  const travelLayer = el("g", { class: "travel-layer" });
+  svg.appendChild(travelLayer);
+  state.charts[svgId] = { x, y, t0, t1, W, H, m, layer: travelLayer, series: live, key };
+
   // crosshair with every series' value at that instant
   const cross = el("line", { class: "crosshair", y1: m.top, y2: H - m.bottom, opacity: 0 });
   svg.appendChild(cross);
@@ -268,6 +274,8 @@ function drawLines(svgId, series, opts = {}) {
   svg.appendChild(hit);
 
   // a legend is always present for two or more series
+  if (opts.redrawMarker) drawTravelMarker();
+
   if (opts.legendId) {
     $(opts.legendId).innerHTML = live.map((s, i) =>
       `<span class="legend-item"><span class="dot"
@@ -276,158 +284,55 @@ function drawLines(svgId, series, opts = {}) {
   }
 }
 
-/* ---------- balance chart ---------- */
-/* One series, so no legend: the panel title names it. Crosshair + tooltip,
- * because an SVG chart on a page is interactive by default. */
+/* ---------- time travel ---------- */
+/* One panel, not two. "Accounts over time" and the old single-account balance
+ * chart asked the same question with different amounts of data, so the slider
+ * now rewinds the whole position: every account, and the tiles beside it.
+ *
+ * The state below exists because this control and the auto-refresh want
+ * opposite things. A refresh rebuilds the series and would snap the handle
+ * back to "now"; a reader who dragged it to August wants it left alone.
+ */
 
-function buildSeries(entries, normalBalance) {
-  // The API returns entries in ledger order (entries.id), which is the correct
-  // cursor for paging an append-only log -- but it is NOT business-time order
-  // once anything is backdated, and a balance-over-time chart is a function of
-  // business time. Sort before accumulating, or the x-axis collapses the first
-  // time a late-arriving transaction lands.
-  const ordered = [...entries].sort((a, b) => a.effective_at - b.effective_at || a.id - b.id);
-  let running = 0;
-  const series = ordered.map((e) => {
-    running += e.direction === normalBalance ? e.amount : -e.amount;
-    return { t: e.effective_at, balance: running, entry: e };
-  });
+const travel = { pinned: false, dragging: false };
 
-  // Trim to the selected window, but only AFTER accumulating -- a running
-  // balance that starts counting at the window's left edge is not a balance,
-  // it is the period's net change wearing a balance's label.
-  const cutoff = Math.floor(Date.now() / 1000) - state.windowDays * 86400;
-  const inWindow = series.filter((p) => p.t >= cutoff);
-  return inWindow.length > 1 ? inWindow : series;
+function setLive() {
+  travel.pinned = false;
+  $("travel").value = 100;
+  $("travel-live").hidden = true;
+  onTravel();
 }
 
-function renderBalance() {
-  const svg = $("balance-chart");
-  svg.replaceChildren();
-  const series = state.series;
-  if (series.length < 2) {
-    svg.setAttribute("height", 60);
-    svg.appendChild(el("text", { x: 12, y: 32, class: "tick" }, "not enough history to plot"));
+function travelInstant() {
+  const chart = state.charts["accounts-chart"];
+  if (!chart) return null;
+  const pct = Number($("travel").value) / 100;
+  return Math.round(chart.t0 + (chart.t1 - chart.t0) * pct);
+}
+
+function onTravel() {
+  const chart = state.charts["accounts-chart"];
+  if (!chart) {
+    $("travel-readout").textContent = "no history yet";
     return;
   }
+  travel.pinned = Number($("travel").value) < 100;
+  $("travel-live").hidden = !travel.pinned;
 
-  const W = svg.clientWidth || 720;
-  const H = 260;
-  const m = { top: 12, right: 16, bottom: 26, left: 58 };
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  svg.setAttribute("height", H);
-
-  const t0 = series[0].t;
-  const t1 = series[series.length - 1].t;
-  const values = series.map((p) => p.balance);
-  const lo = Math.min(0, ...values);
-  const hi = Math.max(...values);
-  const pad = (hi - lo) * 0.08 || 1;
-
-  const x = (t) => m.left + ((t - t0) / Math.max(1, t1 - t0)) * (W - m.left - m.right);
-  const y = (v) =>
-    H - m.bottom - ((v - lo + pad) / (hi - lo + pad * 2)) * (H - m.top - m.bottom);
-
-  // recessive hairline grid; solid, never dashed
-  const ticks = 4;
-  for (let i = 0; i <= ticks; i++) {
-    const v = lo + ((hi - lo) / ticks) * i;
-    svg.appendChild(el("line", { x1: m.left, x2: W - m.right, y1: y(v), y2: y(v), class: "grid-line" }));
-    svg.appendChild(el("text", { x: m.left - 8, y: y(v) + 4, class: "tick", "text-anchor": "end" },
-      compactMoney(v)));
-  }
-  svg.appendChild(el("line", {
-    x1: m.left, x2: W - m.right, y1: H - m.bottom, y2: H - m.bottom, class: "axis-line",
-  }));
-  const mid = t0 + (t1 - t0) / 2;
-  [[t0, m.left, "start"], [mid, x(mid), "middle"], [t1, W - m.right, "end"]]
-    .forEach(([t, px, anchor]) => svg.appendChild(el("text", {
-      x: px, y: H - 8, class: "tick", "text-anchor": anchor,
-    }, dayLabel(t))));
-
-  // step line: a balance holds flat between postings and jumps at one. a
-  // straight interpolation would draw money arriving that never did.
-  let d = `M ${x(series[0].t)} ${y(series[0].balance)}`;
-  for (let i = 1; i < series.length; i++) {
-    d += ` L ${x(series[i].t)} ${y(series[i - 1].balance)} L ${x(series[i].t)} ${y(series[i].balance)}`;
-  }
-  svg.appendChild(el("path", {
-    d: `${d} L ${x(t1)} ${H - m.bottom} L ${x(t0)} ${H - m.bottom} Z`, class: "series-area",
-  }));
-  svg.appendChild(el("path", { d, class: "series-line" }));
-
-  // endpoint direct label -- selective, not a number on every point
-  const last = series[series.length - 1];
-  svg.appendChild(el("circle", { cx: x(last.t), cy: y(last.balance), r: 4, class: "marker" }));
-
-  // A layer the time-travel marker draws into. Kept separate from the series
-  // so scrubbing never re-renders the chart itself -- redrawing the whole path
-  // on every input event is what makes a slider feel laggy.
-  const travelLayer = el("g", { id: "travel-layer" });
-  svg.appendChild(travelLayer);
-
-  // stash the scales so onTravel() can place the marker directly
-  state.chart = { x, y, t0, t1, W, H, m, layer: travelLayer };
-
-  const crossX = el("line", { class: "crosshair", y1: m.top, y2: H - m.bottom, opacity: 0 });
-  const dot = el("circle", { r: 4.5, class: "marker", opacity: 0 });
-  svg.append(crossX, dot);
-
-  const hit = el("rect", {
-    x: m.left, y: m.top, width: W - m.left - m.right, height: H - m.top - m.bottom,
-    fill: "transparent",
-  });
-  hit.style.cursor = "crosshair";
-  hit.addEventListener("pointermove", (evt) => {
-    const box = svg.getBoundingClientRect();
-    const px = ((evt.clientX - box.left) / box.width) * W;
-    const t = t0 + ((px - m.left) / (W - m.left - m.right)) * (t1 - t0);
-    let best = series[0];
-    for (const p of series) if (Math.abs(p.t - t) < Math.abs(best.t - t)) best = p;
-    crossX.setAttribute("x1", x(best.t));
-    crossX.setAttribute("x2", x(best.t));
-    crossX.setAttribute("opacity", 1);
-    dot.setAttribute("cx", x(best.t));
-    dot.setAttribute("cy", y(best.balance));
-    dot.setAttribute("opacity", 1);
-    const e = best.entry;
-    showTip(evt, `<div class="t-title">${money(best.balance, e.currency)}</div>
-      <div class="t-row">${when(best.t)}</div>
-      <div class="t-row">${e.direction} ${money(e.amount, e.currency)}</div>`);
-  });
-  hit.addEventListener("pointerleave", () => {
-    crossX.setAttribute("opacity", 0);
-    dot.setAttribute("opacity", 0);
-    hideTip();
-  });
-  svg.appendChild(hit);
-
-  if (travel.pinned) drawTravelMarker();
+  const at = travelInstant();
+  drawTravelMarker();
+  renderPosition(travel.pinned ? at : null);
+  $("travel-readout").textContent = `${when(at)}${travel.pinned ? "" : " (now)"}`;
 }
 
-/* Marks where the slider is sitting, and shades everything after it.
- *
- * Without this the slider changes a number and nothing else, so there is no
- * way to see WHERE in the history you are. The shaded region is the point: it
- * is the part of the ledger that had not happened yet at the instant you are
- * looking at. */
+/* Marks where the slider sits, and shades what had not happened yet. */
 function drawTravelMarker() {
-  const chart = state.chart;
-  if (!chart || state.series.length < 2) return;
+  const chart = state.charts["accounts-chart"];
+  if (!chart) return;
   chart.layer.replaceChildren();
   if (!travel.pinned) return;
 
-  const pct = Number($("travel").value) / 100;
-  const at = chart.t0 + (chart.t1 - chart.t0) * pct;
-  const px = chart.x(at);
-
-  // the balance at that instant, from the series we already hold -- the
-  // authoritative figure still comes from the API for the readout
-  let point = state.series[0];
-  for (const p of state.series) {
-    if (p.t <= at) point = p; else break;
-  }
-
+  const px = chart.x(travelInstant());
   chart.layer.appendChild(el("rect", {
     x: px, y: chart.m.top,
     width: Math.max(0, chart.W - chart.m.right - px),
@@ -438,97 +343,10 @@ function drawTravelMarker() {
     x1: px, x2: px, y1: chart.m.top, y2: chart.H - chart.m.bottom,
     class: "travel-line",
   }));
-  chart.layer.appendChild(el("circle", {
-    cx: px, cy: chart.y(point.balance), r: 5, class: "travel-dot",
-  }));
-}
-
-function renderBalanceTable() {
-  const rows = state.series.slice(-60).reverse();
-  $("balance-table").innerHTML = `<table><thead><tr>
-      <th>Effective</th><th>Direction</th><th class="num">Amount</th><th class="num">Balance</th>
-    </tr></thead><tbody>${rows.map((p) => `<tr>
-      <td class="mono">${when(p.t)}</td>
-      <td class="${p.entry.direction}">${p.entry.direction}</td>
-      <td class="num">${money(p.entry.amount, p.entry.currency)}</td>
-      <td class="num">${money(p.balance, p.entry.currency)}</td>
-    </tr>`).join("")}</tbody></table>`;
-}
-
-/* ---------- time travel ---------- */
-/* The slider does not read the chart. It asks the API for the balance as of
- * that instant, which recomputes it from entries -- so what you see is the
- * ledger's own answer, not a client-side approximation of it.
- *
- * The state below exists because this panel and the 5-second auto-refresh want
- * opposite things. A refresh rebuilds the series and would naturally snap the
- * handle back to "now"; a reader who dragged it to August wants it left alone.
- * So a refresh only re-pins the handle while the view is still live.
- */
-
-const travel = {
-  pinned: false,    // the reader has scrubbed away from "now"
-  dragging: false,  // a drag is in progress; never touch the handle mid-gesture
-  seq: 0,           // guards against a slow response overwriting a newer one
-};
-
-let travelTimer = null;
-
-function setLive() {
-  travel.pinned = false;
-  $("travel").value = 100;
-  $("travel-live").hidden = true;
-  if (state.chart) state.chart.layer.replaceChildren();
-  onTravel();
-}
-
-function onTravel() {
-  const series = state.series;
-  const slider = $("travel");
-  if (series.length < 2) {
-    $("travel-readout").textContent = "not enough history";
-    return;
-  }
-
-  const pct = Number(slider.value) / 100;
-  travel.pinned = pct < 1;
-  $("travel-live").hidden = !travel.pinned;
-
-  const t0 = series[0].t;
-  const t1 = series[series.length - 1].t;
-  const at = Math.round(t0 + (t1 - t0) * pct);
-  const label = travel.pinned ? when(at) : `${when(at)} (now)`;
-
-  // Keep the previous number on screen while the new one is in flight. Blanking
-  // it to an ellipsis on every input event makes a drag look like it is failing.
-  // move the marker synchronously; waiting on the network to show the handle's
-  // own position is what would make dragging feel unresponsive
-  drawTravelMarker();
-
-  const readout = $("travel-readout");
-  readout.dataset.at = label;
-  readout.classList.add("loading");
-
-  const seq = ++travel.seq;
-  clearTimeout(travelTimer);
-  travelTimer = setTimeout(async () => {
-    try {
-      const b = await api(
-        `/v1/accounts/${state.accountId}/balance?as_of=${new Date(at * 1000).toISOString()}`
-      );
-      if (seq !== travel.seq) return;   // a newer scrub already superseded this
-      readout.textContent = `${label} · ${money(b.balance, b.currency)}`;
-    } catch (err) {
-      if (seq !== travel.seq) return;
-      readout.textContent = `${label} · ${err.message}`;
-    } finally {
-      if (seq === travel.seq) readout.classList.remove("loading");
-    }
-  }, 120);
 }
 
 /* ---------- category chart ---------- */
-/* Horizontal bars, one series, ONE color. Coloring each bar by its own size
+/* Horizontal bars, one series, ONE colour. Colouring each bar by its own size
  * would double-encode length as hue and burn the only free channel. */
 
 function renderCategories(rows) {
@@ -556,29 +374,20 @@ function renderCategories(rows) {
     const yTop = i * rowH + 6;
     const w = Math.max(2, (r.spend / max) * trackW);
     const isSelected = selected === r.category;
-    // Emphasis, not recoloring: the selected bar keeps the series color and
-    // the others recede. Assigning a different hue per category would burn
-    // the one free channel on information the bar length already carries.
+    // Emphasis, not recolouring: the selected bar keeps the series colour and
+    // the others recede.
     const muted = selected && !isSelected;
 
     const group = el("g", {
       class: "cat-row" + (isSelected ? " is-selected" : "") + (muted ? " is-muted" : ""),
-      role: "button",
-      tabindex: "0",
-      "aria-pressed": String(isSelected),
+      role: "button", tabindex: "0", "aria-pressed": String(isSelected),
       "aria-label": `Filter the feed to ${r.category}`,
     });
-
-    // full-width hit target: clicking the label or the empty track counts too
-    group.appendChild(el("rect", {
-      x: 0, y: yTop, width: W, height: rowH - 4, class: "cat-hit",
-    }));
+    group.appendChild(el("rect", { x: 0, y: yTop, width: W, height: rowH - 4, class: "cat-hit" }));
     group.appendChild(el("text", {
-      x: 0, y: yTop + 14, class: "bar-name", "dominant-baseline": "middle",
-    }, r.category));
+      x: 0, y: yTop + 14, class: "bar-name", "dominant-baseline": "middle" }, r.category));
     group.appendChild(el("rect", {
-      x: labelW, y: yTop + 3, width: w, height: 16, rx: 4, class: "bar",
-    }));
+      x: labelW, y: yTop + 3, width: w, height: 16, rx: 4, class: "bar" }));
     group.appendChild(el("text", {
       x: labelW + w + 8, y: yTop + 14, class: "bar-label", "dominant-baseline": "middle",
     }, money(r.spend)));
@@ -604,6 +413,7 @@ function selectCategory(category) {
   refreshFeed();
 }
 
+/* One place builds the feed query, so its two callers cannot disagree. */
 function feedQuery() {
   const parts = ["limit=30"];
   if (state.categoryFilter) parts.push(`category=${encodeURIComponent(state.categoryFilter)}`);
@@ -613,10 +423,8 @@ function feedQuery() {
 
 async function refreshFeed() {
   const chip = $("feed-filter");
-  const category = state.categoryFilter;
-  chip.hidden = !category;
-  if (category) chip.querySelector(".chip-label").textContent = category;
-
+  chip.hidden = !state.categoryFilter;
+  if (state.categoryFilter) chip.querySelector(".chip-label").textContent = state.categoryFilter;
   try {
     const list = await api(feedQuery());
     state.transactions = list.data;
@@ -633,31 +441,47 @@ function renderAccounts(series) {
   drawLines("accounts-chart", series.map((s) => ({
     label: s.name.split(":")[1] || s.name,
     // A liability plotted as a positive number sits in the same space as an
-    // asset and reads as money you have. Negating it puts debt below the
-    // zero line, where a glance can tell the two apart.
+    // asset and reads as money you have. Negating it puts debt below the zero
+    // line, where a glance can tell the two apart.
     points: s.points.map((p) => ({
       at: p.at, value: s.type === "liability" ? -p.balance : p.balance,
     })),
   })), { valueKey: "value", legendId: "accounts-legend", height: 250,
-         empty: "no account history yet" });
+         empty: "no account history yet", redrawMarker: true });
 
-  const latest = (s) => s.points[s.points.length - 1].balance;
-  const assets = series.filter((s) => s.type === "asset").reduce((a, s) => a + latest(s), 0);
-  const debts = series.filter((s) => s.type === "liability").reduce((a, s) => a + latest(s), 0);
-  const first = (s) => s.points[0].balance;
-  const openingNet =
-    series.filter((s) => s.type === "asset").reduce((a, s) => a + first(s), 0)
-    - series.filter((s) => s.type === "liability").reduce((a, s) => a + first(s), 0);
+  renderPosition(travel.pinned ? travelInstant() : null);
+}
+
+/* Assets, debts and net worth -- at "now", or at the slider's instant. */
+function renderPosition(at) {
+  const series = state.balanceSeries;
+  if (!series.length) {
+    $("networth-tiles").innerHTML = `<p class="empty">No accounts with history.</p>`;
+    return;
+  }
+
+  const valueAt = (s) => {
+    if (at === null || at === undefined) return s.points[s.points.length - 1].balance;
+    let best = s.points[0];
+    for (const p of s.points) if (p.at <= at) best = p;
+    return best.balance;
+  };
+
+  const assets = series.filter((s) => s.type === "asset").reduce((a, s) => a + valueAt(s), 0);
+  const debts = series.filter((s) => s.type === "liability").reduce((a, s) => a + valueAt(s), 0);
+  const opening = series.reduce(
+    (a, s) => a + (s.type === "liability" ? -s.points[0].balance : s.points[0].balance), 0);
   const net = assets - debts;
-  const change = net - openingNet;
+  const change = net - opening;
 
   $("networth-tiles").innerHTML = [
-    { label: "Net worth", value: money(net),
-      note: `${change >= 0 ? "up" : "down"} ${money(Math.abs(change))} this window`,
+    { label: at ? `Net worth on ${dayLabel(at)}` : "Net worth", value: money(net),
+      note: `${change >= 0 ? "up" : "down"} ${money(Math.abs(change))} since ${dayLabel(series[0].points[0].at)}`,
       status: change >= 0 ? "good" : "warning",
       word: change >= 0 ? "growing" : "shrinking" },
     { label: "Assets", value: money(assets),
-      note: `${series.filter((s) => s.type === "asset").length} accounts`,
+      note: series.filter((s) => s.type === "asset")
+        .map((s) => `${s.name.split(":")[1]} ${compactMoney(valueAt(s))}`).join(" \u00b7 ") || "none",
       status: "good", word: "held" },
     { label: "Owed", value: money(debts),
       note: debts ? "credit card balance" : "nothing owed",
@@ -806,10 +630,10 @@ async function loadAll() {
     if (!state.accounts.length) await loadAccounts();
     state.account = state.accounts.find((a) => a.id === state.accountId);
 
-    const [health, entries, transactions, signals, categories, balances, spending] =
+    const [health, connection, transactions, signals, categories, balances, spending] =
       await Promise.all([
       api("/v1/health"),
-      api(`/v1/ledger/entries?account=${state.accountId}&limit=500`),
+      api("/v1/me"),
       api(feedQuery()),
       api("/v1/fraud_signals?limit=25"),
       api(`/v1/analytics/spend_by_category?days=${state.windowDays}`),
@@ -818,17 +642,7 @@ async function loadAll() {
     ]);
 
     renderHealth(health);
-    state.entries = entries.data;
-    state.series = buildSeries(entries.data, state.account?.normal_balance || "debit");
-    renderBalance();
-    renderBalanceTable();
-    // only re-pin to "now" when the reader has not scrubbed and is not
-    // mid-drag; otherwise a background refresh yanks the handle out of
-    // their hand every five seconds
-    if (!travel.pinned && !travel.dragging) {
-      $("travel").value = 100;
-      onTravel();
-    }
+    renderConnection(connection);
     state.transactions = transactions.data;
     state.categories = categories.data;
     renderFeed(transactions.data);
@@ -836,13 +650,36 @@ async function loadAll() {
     renderCategories(categories.data);
     renderAccounts(balances.data);
     renderSpending(spending.data);
+    // only re-pin to "now" when the reader has not scrubbed and is not
+    // mid-drag; otherwise a background refresh yanks the handle out of
+    // their hand every five seconds
+    if (!travel.pinned && !travel.dragging) {
+      $("travel").value = 100;
+      $("travel-live").hidden = true;
+    }
+    onTravel();
     $("feed-filter").hidden = !state.categoryFilter;
 
     $("mode-line").textContent =
-      `${state.account?.name || ""} · ${state.entries.length} entries`;
+      `${connection.tenant_name} · feed scoped to ${state.account?.name || "all accounts"}`;
   } catch (err) {
     if (err.message !== "unauthorized") console.error(err);
   }
+}
+
+function renderConnection(conn) {
+  state.connection = conn;
+  const stale = conn.transactions === 0;
+  const age = conn.newest_transaction
+    ? Math.floor((Date.now() / 1000 - conn.newest_transaction) / 86400) : null;
+  $("connection").innerHTML =
+    `<span class="status ${stale ? "warning" : "good"}">${conn.mode}</span>` +
+    `<span class="conn-key">${conn.key}</span>` +
+    `<span class="conn-meta">${conn.transactions.toLocaleString()} txns` +
+    `${age !== null && age > 2 ? ` \u00b7 newest ${age}d old` : ""}</span>`;
+  $("connection").title =
+    `${conn.tenant_name} (${conn.tenant})\n${conn.accounts} accounts, ` +
+    `${conn.transactions} transactions\nClick to use a different API key.`;
 }
 
 /* ---------- key + theme ---------- */
@@ -865,12 +702,17 @@ $("key-save").addEventListener("click", () => {
 $("theme-toggle").addEventListener("click", () => {
   const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", next);
-  localStorage.setItem(THEME_STORAGE, next);
-  renderBalance();
-  loadAll();
+  try { localStorage.setItem(THEME_STORAGE, next); } catch (err) { /* blocked storage */ }
+  loadAll();   // the charts read their colours from CSS tokens, so redraw
 });
 
 $("refresh").addEventListener("click", loadAll);
+$("connection").addEventListener("click", () => {
+  // A stale key is the single easiest way to look at the wrong books, so
+  // changing it is one click rather than a trip through devtools.
+  $("key-input").value = "";
+  $("key-dialog").showModal();
+});
 $("account-picker").addEventListener("change", (e) => {
   state.accountId = e.target.value;
   travel.pinned = false;          // a different account starts at "now"
@@ -891,19 +733,11 @@ $("travel").addEventListener("input", onTravel);
   $("travel").addEventListener(evt, () => { travel.dragging = false; }));
 $("travel-live").addEventListener("click", setLive);
 $("feed-filter").addEventListener("click", () => selectCategory(null));
-$("balance-table-toggle").addEventListener("click", (e) => {
-  const table = $("balance-table");
-  const shown = !table.hidden;
-  table.hidden = shown;
-  e.target.textContent = shown ? "Show as table" : "Hide table";
-  e.target.setAttribute("aria-expanded", String(!shown));
-});
 
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
-    renderBalance();
     renderAccounts(state.balanceSeries);
     renderSpending(state.spendSeries);
   }, 150);

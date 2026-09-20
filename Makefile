@@ -89,10 +89,14 @@ brew-pg-5433:  ## move Homebrew's postgres to 5433, leaving another install on 5
 	echo; \
 	echo "make reads .env on its own. For your own shell:  source .env"
 
-demo: setup  ## migrate, bootstrap, generate 90 days of history, drain the pipeline
+demo: setup  ## migrate, bootstrap, generate a year of history, drain the pipeline
 	$(PY) -m ledgerflow.cli migrate
 	$(PY) -m ledgerflow.cli bootstrap | tee .bootstrap.json
-	$(PY) -m ledgerflow.cli loadgen --days 90
+	@# wipe the previous run's history rather than stacking another year on
+	@# top of it -- two overlapping generations of the same life is not a
+	@# ledger anyone can read
+	$(PY) -m ledgerflow.cli reset
+	$(PY) -m ledgerflow.cli loadgen --days 365
 	$(PY) -m ledgerflow.cli worker all
 	@echo
 	@echo "Now run:  make serve   then open http://localhost:8000/dashboard/"

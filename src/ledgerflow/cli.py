@@ -81,38 +81,72 @@ def cmd_migrate(args: argparse.Namespace) -> None:
 
 
 def cmd_bootstrap(args: argparse.Namespace) -> dict[str, Any]:
+    """Create the demo tenant, or bring an existing one up to date.
+
+    Idempotent on purpose. Minting a brand-new tenant on every run is what made
+    the dashboard silently show stale data: the browser caches an API key, keys
+    are scoped to a tenant, and a new tenant means the cached key still works
+    and still points at last week's ledger. Nothing errors -- you just quietly
+    read the wrong books.
+
+    Reusing the tenant means a key issued months ago keeps working and sees
+    current data, and accounts added since (investments, the credit card,
+    equity) are backfilled rather than missing.
+    """
     from .api.auth import create_key
     from .application import services
     from .domain.ledger import AccountType
 
-    tenant_id = args.tenant or ids.new_id("ten")
-    out: dict[str, Any] = {"tenant_id": tenant_id, "keys": {}, "accounts": {}}
+    out: dict[str, Any] = {"keys": {}, "accounts": {}}
 
     with unit_of_work() as uow:
-        uow.execute(
-            "INSERT INTO tenants (id, name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            (tenant_id, args.name),
-        )
+        existing = None
+        if args.tenant:
+            existing = uow.one("SELECT * FROM tenants WHERE id = %s", (args.tenant,))
+        else:
+            existing = uow.one(
+                "SELECT * FROM tenants WHERE name = %s ORDER BY created_at DESC LIMIT 1",
+                (args.name,),
+            )
+
+        if existing:
+            tenant_id = existing["id"]
+            out["reused"] = True
+        else:
+            tenant_id = args.tenant or ids.new_id("ten")
+            uow.execute(
+                "INSERT INTO tenants (id, name) VALUES (%s, %s)", (tenant_id, args.name)
+            )
+            out["reused"] = False
+        out["tenant_id"] = tenant_id
+
         for mode in ("test", "live"):
             plaintext, _ = create_key(uow, tenant_id=tenant_id, mode=mode)
             out["keys"][mode] = plaintext
 
-        # the chart of accounts exists in both modes; test and live never share rows
+        # add only what is missing, in both modes; test and live never share rows
+        created = 0
         for mode in ("test", "live"):
-            ctx = TenantContext(tenant_id=tenant_id, api_key_id="bootstrap", mode=mode)
+            have = {
+                a["external_id"]
+                for a in uow.accounts.list(tenant_id, mode, limit=500)
+                if a["external_id"]
+            }
             for name, type_, external, floor in DEFAULT_ACCOUNTS:
+                if external in have:
+                    if mode == "test":
+                        row = uow.accounts.get_by_external(external, tenant_id, mode)
+                        out["accounts"][external] = row["id"]
+                    continue
                 row = uow.accounts.create(
-                    account_id=ids.account_id(),
-                    tenant_id=tenant_id,
-                    mode=mode,
-                    name=name,
-                    type=AccountType(type_),
-                    currency="usd",
-                    external_id=external,
-                    minimum_balance=floor,
+                    account_id=ids.account_id(), tenant_id=tenant_id, mode=mode,
+                    name=name, type=AccountType(type_), currency="usd",
+                    external_id=external, minimum_balance=floor,
                 )
+                created += 1
                 if mode == "test":
                     out["accounts"][external] = row["id"]
+        out["accounts_added"] = created
 
     print(json.dumps(out, indent=2))
     return out
@@ -131,6 +165,48 @@ def cmd_worker(args: argparse.Namespace) -> None:
     from .workers import run_worker
 
     run_worker(args.name, once=args.once)
+
+
+def cmd_reset(args: argparse.Namespace) -> None:
+    """Delete a tenant's ledger data so a fresh history can be generated.
+
+    This has to switch off the append-only trigger on `entries`, which exists
+    precisely to stop anyone doing this. That is the right protection for a
+    ledger and the wrong one for a demo you want to regenerate, so the bypass
+    is here, in a command that names what it is, rather than weakened in the
+    schema where it guards real money.
+
+    session_replication_role is transaction-scoped: the trigger is live again
+    the moment this commits, whether or not it commits cleanly.
+    """
+    tenant_id = args.tenant or _default_tenant()
+    with unit_of_work() as uow:
+        uow.execute("SET LOCAL session_replication_role = replica")
+        counts = {}
+        for table, sql in [
+            ("fraud_signals", "DELETE FROM fraud_signals WHERE tenant_id = %s"),
+            ("normalized_transactions",
+             "DELETE FROM normalized_transactions WHERE tenant_id = %s"),
+            ("entries",
+             "DELETE FROM entries WHERE account_id IN "
+             "(SELECT id FROM accounts WHERE tenant_id = %s)"),
+            ("raw_transactions", "DELETE FROM raw_transactions WHERE tenant_id = %s"),
+            ("balance_snapshots",
+             "DELETE FROM balance_snapshots WHERE account_id IN "
+             "(SELECT id FROM accounts WHERE tenant_id = %s)"),
+            ("transactions", "DELETE FROM transactions WHERE tenant_id = %s"),
+            ("outbox", "DELETE FROM outbox WHERE tenant_id = %s"),
+            ("idempotency_keys", "DELETE FROM idempotency_keys WHERE tenant_id = %s"),
+        ]:
+            rows = uow.execute(sql + " RETURNING 1", (tenant_id,))
+            counts[table] = len(rows)
+        # consumers must forget what they have seen, or a replayed event is
+        # skipped as a duplicate and the derived tables never rebuild
+        uow.execute("TRUNCATE processed_events")
+        uow.execute("DELETE FROM stream_messages")
+        uow.execute("DELETE FROM consumer_offsets")
+
+    print(f"reset {tenant_id}: " + ", ".join(f"{k}={v}" for k, v in counts.items() if v))
 
 
 def _default_tenant() -> str:
@@ -237,6 +313,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--count", type=int, default=1000)
     p.add_argument("--days", type=int, default=90); p.add_argument("--seed", type=int, default=17)
     p.set_defaults(func=cmd_loadgen)
+
+    p = sub.add_parser("reset")
+    p.add_argument("--tenant", help="defaults to the most recent bootstrapped tenant")
+    p.set_defaults(func=cmd_reset)
 
     p = sub.add_parser("snapshot")
     p.add_argument("--threshold", type=int, default=500,
