@@ -208,6 +208,53 @@ def _timeline(start: datetime, days: int, rng: random.Random) -> list[Event]:
                 descriptor=_descriptor(template, rng),
             ))
 
+    # --- the market moves --------------------------------------------------
+    # Contributions are only half of an investment account. The other half is
+    # what the market does to the money already in there, which is why the
+    # balance has to be marked to market rather than left equal to the sum of
+    # deposits -- otherwise it is a savings account with extra steps.
+    #
+    # Booked the accounting-correct way: an unrealized gain debits the asset
+    # and credits revenue; a loss debits an expense and credits the asset.
+    # Both are ordinary balanced postings. Nothing special is required of the
+    # ledger to represent a portfolio.
+    contributions = sorted(
+        (e.at, e.amount) for e in events
+        if e.kind == "transfer" and e.accounts.get("destination") == "investments"
+    )
+
+    held = OPENING.get("investments", 0)
+    consumed = 0
+    month = start.replace(day=1)
+    while month < end:
+        mark = month.replace(day=27, hour=16, minute=0)
+        if mark >= end:
+            break
+        # everything contributed since the last mark is now invested
+        while consumed < len(contributions) and contributions[consumed][0] <= mark:
+            held += contributions[consumed][1]
+            consumed += 1
+
+        if start <= mark and held > 0:
+            # index-like: roughly 8%/yr drift and 15%/yr volatility, monthly
+            monthly_return = rng.gauss(0.0065, 0.042)
+            change = int(held * monthly_return)
+            if change > 0:
+                events.append(Event(
+                    at=mark, kind="deposit",
+                    accounts={"destination": "investments", "income": "gains"},
+                    amount=change, note=f"market {monthly_return:+.2%}",
+                ))
+            elif change < 0:
+                events.append(Event(
+                    at=mark, kind="card_purchase",
+                    accounts={"expense": "losses", "funding": "investments"},
+                    amount=-change, note=f"market {monthly_return:+.2%}",
+                ))
+            held += change
+
+        month = (month + timedelta(days=32)).replace(day=1)
+
     # --- cash: withdraw from checking, then spend it -----------------------
     # Without this the Cash account exists and never moves, which is worse than
     # not having it: an account that is always zero is noise on every screen.

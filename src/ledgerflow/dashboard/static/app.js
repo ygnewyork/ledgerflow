@@ -18,6 +18,9 @@ const state = {
   series: [],
   transactions: [],
   categoryFilter: null,   // set by clicking a bar in Spend by category
+  balanceSeries: [],      // asset & liability accounts over time
+  spendSeries: [],        // cumulative spend per category
+  windowDays: 180,
 };
 
 // Deposits and transfers carry no merchant descriptor, so the feed names them
@@ -30,6 +33,7 @@ const KIND_LABELS = {
   refund: "Refund",
   fee: "Fee",
   "card_purchase.reversal": "Reversal",
+  opening_balance: "Opening balance",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -159,6 +163,119 @@ function renderHealth(h) {
     </div>`).join("");
 }
 
+/* ---------- a multi-series line chart ---------- */
+/* Used by both "Accounts over time" and "Spending over time". One function,
+ * because they differ only in what a point means -- a stock in one, a running
+ * total in the other -- and duplicating a chart is how two charts drift into
+ * looking like they measure different things. */
+
+const SERIES_COLORS = 6;
+
+function drawLines(svgId, series, opts = {}) {
+  const svg = $(svgId);
+  svg.replaceChildren();
+  const live = series.filter((s) => s.points && s.points.length > 1);
+  if (!live.length) {
+    svg.setAttribute("height", 70);
+    svg.appendChild(el("text", { x: 12, y: 38, class: "tick" },
+      opts.empty || "no data yet"));
+    return;
+  }
+
+  const W = svg.clientWidth || 640;
+  const H = opts.height || 240;
+  const m = { top: 12, right: 92, bottom: 26, left: 62 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("height", H);
+
+  const key = opts.valueKey;
+  const all = live.flatMap((s) => s.points);
+  const t0 = Math.min(...all.map((p) => p.at));
+  const t1 = Math.max(...all.map((p) => p.at));
+  const lo = Math.min(0, ...all.map((p) => p[key]));
+  const hi = Math.max(...all.map((p) => p[key]));
+  const pad = (hi - lo) * 0.08 || 1;
+
+  const x = (v) => m.left + ((v - t0) / Math.max(1, t1 - t0)) * (W - m.left - m.right);
+  const y = (v) => H - m.bottom - ((v - lo + pad) / (hi - lo + pad * 2)) * (H - m.top - m.bottom);
+
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) / 4) * i;
+    svg.appendChild(el("line", {
+      x1: m.left, x2: W - m.right, y1: y(v), y2: y(v), class: "grid-line" }));
+    svg.appendChild(el("text", {
+      x: m.left - 8, y: y(v) + 4, class: "tick", "text-anchor": "end" }, compactMoney(v)));
+  }
+  svg.appendChild(el("line", {
+    x1: m.left, x2: W - m.right, y1: H - m.bottom, y2: H - m.bottom, class: "axis-line" }));
+  const mid = t0 + (t1 - t0) / 2;
+  [[t0, m.left, "start"], [mid, x(mid), "middle"], [t1, W - m.right, "end"]].forEach(
+    ([v, px, anchor]) => svg.appendChild(el("text", {
+      x: px, y: H - 8, class: "tick", "text-anchor": anchor }, dayLabel(v))));
+
+  const labels = [];
+  live.forEach((s, i) => {
+    const colour = `var(--series-${(i % SERIES_COLORS) + 1})`;
+    const d = s.points
+      .map((p, j) => `${j ? "L" : "M"} ${x(p.at)} ${y(p[key])}`)
+      .join(" ");
+    svg.appendChild(el("path", { d, fill: "none", stroke: colour, "stroke-width": 2,
+      "stroke-linejoin": "round" }));
+
+    const last = s.points[s.points.length - 1];
+    svg.appendChild(el("circle", {
+      cx: x(last.at), cy: y(last[key]), r: 3.5, fill: colour,
+      stroke: "var(--surface-1)", "stroke-width": 2 }));
+    labels.push({ y: y(last[key]), colour,
+      text: s.label.length > 12 ? s.label.slice(0, 11) + "\u2026" : s.label });
+  });
+
+  // Endpoint labels, nudged apart. Two series that end at similar values print
+  // their names on top of each other, and an unreadable label is worse than no
+  // label -- it looks like a rendering fault rather than a crowded chart.
+  const GAP = 15;
+  labels.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < labels.length; i++) {
+    if (labels[i].y - labels[i - 1].y < GAP) labels[i].y = labels[i - 1].y + GAP;
+  }
+  const overflow = labels.length ? labels[labels.length - 1].y - (H - m.bottom) : 0;
+  if (overflow > 0) labels.forEach((l) => { l.y -= overflow; });
+  labels.forEach((l) => svg.appendChild(el("text", {
+    x: W - m.right + 10, y: l.y + 4, class: "series-label", fill: l.colour,
+  }, l.text)));
+
+  // crosshair with every series' value at that instant
+  const cross = el("line", { class: "crosshair", y1: m.top, y2: H - m.bottom, opacity: 0 });
+  svg.appendChild(cross);
+  const hit = el("rect", { x: m.left, y: m.top, width: W - m.left - m.right,
+    height: H - m.top - m.bottom, fill: "transparent" });
+  hit.style.cursor = "crosshair";
+  hit.addEventListener("pointermove", (evt) => {
+    const box = svg.getBoundingClientRect();
+    const px = ((evt.clientX - box.left) / box.width) * W;
+    const at = t0 + ((px - m.left) / (W - m.left - m.right)) * (t1 - t0);
+    cross.setAttribute("x1", x(at)); cross.setAttribute("x2", x(at));
+    cross.setAttribute("opacity", 1);
+    const rows = live.map((s, i) => {
+      let best = s.points[0];
+      for (const p of s.points) if (Math.abs(p.at - at) < Math.abs(best.at - at)) best = p;
+      return `<div class="t-row"><span class="dot" style="background:var(--series-${(i % SERIES_COLORS) + 1})"></span>
+              ${s.label} ${money(best[key])}</div>`;
+    }).join("");
+    showTip(evt, `<div class="t-title">${dayLabel(at)}</div>${rows}`);
+  });
+  hit.addEventListener("pointerleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
+  svg.appendChild(hit);
+
+  // a legend is always present for two or more series
+  if (opts.legendId) {
+    $(opts.legendId).innerHTML = live.map((s, i) =>
+      `<span class="legend-item"><span class="dot"
+        style="background:var(--series-${(i % SERIES_COLORS) + 1})"></span>${s.label}</span>`
+    ).join("");
+  }
+}
+
 /* ---------- balance chart ---------- */
 /* One series, so no legend: the panel title names it. Crosshair + tooltip,
  * because an SVG chart on a page is interactive by default. */
@@ -171,10 +288,17 @@ function buildSeries(entries, normalBalance) {
   // time a late-arriving transaction lands.
   const ordered = [...entries].sort((a, b) => a.effective_at - b.effective_at || a.id - b.id);
   let running = 0;
-  return ordered.map((e) => {
+  const series = ordered.map((e) => {
     running += e.direction === normalBalance ? e.amount : -e.amount;
     return { t: e.effective_at, balance: running, entry: e };
   });
+
+  // Trim to the selected window, but only AFTER accumulating -- a running
+  // balance that starts counting at the window's left edge is not a balance,
+  // it is the period's net change wearing a balance's label.
+  const cutoff = Math.floor(Date.now() / 1000) - state.windowDays * 86400;
+  const inWindow = series.filter((p) => p.t >= cutoff);
+  return inWindow.length > 1 ? inWindow : series;
 }
 
 function renderBalance() {
@@ -480,20 +604,80 @@ function selectCategory(category) {
   refreshFeed();
 }
 
+function feedQuery() {
+  const parts = ["limit=30"];
+  if (state.categoryFilter) parts.push(`category=${encodeURIComponent(state.categoryFilter)}`);
+  if (state.accountId) parts.push(`account=${encodeURIComponent(state.accountId)}`);
+  return `/v1/transactions?${parts.join("&")}`;
+}
+
 async function refreshFeed() {
   const chip = $("feed-filter");
   const category = state.categoryFilter;
   chip.hidden = !category;
   if (category) chip.querySelector(".chip-label").textContent = category;
 
-  const query = category ? `&category=${encodeURIComponent(category)}` : "";
   try {
-    const list = await api(`/v1/transactions?limit=30${query}`);
+    const list = await api(feedQuery());
     state.transactions = list.data;
     renderFeed(list.data);
   } catch (err) {
     if (err.message !== "unauthorized") console.error(err);
   }
+}
+
+/* ---------- what you have, and what you owe ---------- */
+
+function renderAccounts(series) {
+  state.balanceSeries = series;
+  drawLines("accounts-chart", series.map((s) => ({
+    label: s.name.split(":")[1] || s.name,
+    // A liability plotted as a positive number sits in the same space as an
+    // asset and reads as money you have. Negating it puts debt below the
+    // zero line, where a glance can tell the two apart.
+    points: s.points.map((p) => ({
+      at: p.at, value: s.type === "liability" ? -p.balance : p.balance,
+    })),
+  })), { valueKey: "value", legendId: "accounts-legend", height: 250,
+         empty: "no account history yet" });
+
+  const latest = (s) => s.points[s.points.length - 1].balance;
+  const assets = series.filter((s) => s.type === "asset").reduce((a, s) => a + latest(s), 0);
+  const debts = series.filter((s) => s.type === "liability").reduce((a, s) => a + latest(s), 0);
+  const first = (s) => s.points[0].balance;
+  const openingNet =
+    series.filter((s) => s.type === "asset").reduce((a, s) => a + first(s), 0)
+    - series.filter((s) => s.type === "liability").reduce((a, s) => a + first(s), 0);
+  const net = assets - debts;
+  const change = net - openingNet;
+
+  $("networth-tiles").innerHTML = [
+    { label: "Net worth", value: money(net),
+      note: `${change >= 0 ? "up" : "down"} ${money(Math.abs(change))} this window`,
+      status: change >= 0 ? "good" : "warning",
+      word: change >= 0 ? "growing" : "shrinking" },
+    { label: "Assets", value: money(assets),
+      note: `${series.filter((s) => s.type === "asset").length} accounts`,
+      status: "good", word: "held" },
+    { label: "Owed", value: money(debts),
+      note: debts ? "credit card balance" : "nothing owed",
+      status: debts > assets * 0.3 ? "warning" : "good",
+      word: debts > assets * 0.3 ? "high" : "manageable" },
+  ].map((tile) => `
+    <div class="tile">
+      <div class="label">${tile.label}</div>
+      <div class="value">${tile.value}</div>
+      <div class="note"><span class="status ${tile.status}">${tile.word}</span> &middot; ${tile.note}</div>
+    </div>`).join("");
+}
+
+function renderSpending(series) {
+  state.spendSeries = series;
+  drawLines("spending-chart", series.map((s) => ({
+    label: s.category,
+    points: s.points.map((p) => ({ at: p.at, value: p.spend })),
+  })), { valueKey: "value", legendId: "spending-legend", height: 250,
+         empty: "no spending in this window" });
 }
 
 /* ---------- feed, signals, explorer ---------- */
@@ -597,6 +781,11 @@ async function loadAccounts() {
   // balance, so the default is an account with history rather than whichever
   // one sorts first alphabetically. "Assets:Cash" beating "Assets:Checking" to
   // the front and rendering an empty chart is not a good first impression.
+  // Only accounts money SITS in. An expense account has a "balance" -- the
+  // total ever spent -- and charting it beside checking invites reading a
+  // year of groceries as savings. Spending has its own panel, with its own
+  // axis, on purpose.
+  list.data = list.data.filter((a) => a.type === "asset" || a.type === "liability");
   state.accounts = list.data.sort((a, b) =>
     (a.type === "asset" ? 0 : 1) - (b.type === "asset" ? 0 : 1)
     || Math.abs(b.balance || 0) - Math.abs(a.balance || 0)
@@ -617,13 +806,15 @@ async function loadAll() {
     if (!state.accounts.length) await loadAccounts();
     state.account = state.accounts.find((a) => a.id === state.accountId);
 
-    const [health, entries, transactions, signals, categories] = await Promise.all([
+    const [health, entries, transactions, signals, categories, balances, spending] =
+      await Promise.all([
       api("/v1/health"),
       api(`/v1/ledger/entries?account=${state.accountId}&limit=500`),
-      api("/v1/transactions?limit=30" + (state.categoryFilter
-          ? `&category=${encodeURIComponent(state.categoryFilter)}` : "")),
+      api(feedQuery()),
       api("/v1/fraud_signals?limit=25"),
-      api("/v1/analytics/spend_by_category?days=180"),
+      api(`/v1/analytics/spend_by_category?days=${state.windowDays}`),
+      api(`/v1/analytics/balance_history?days=${state.windowDays}&points=60`),
+      api(`/v1/analytics/spending_history?days=${state.windowDays}&points=60&top=5`),
     ]);
 
     renderHealth(health);
@@ -643,6 +834,8 @@ async function loadAll() {
     renderFeed(transactions.data);
     renderSignals(signals.data);
     renderCategories(categories.data);
+    renderAccounts(balances.data);
+    renderSpending(spending.data);
     $("feed-filter").hidden = !state.categoryFilter;
 
     $("mode-line").textContent =
@@ -684,6 +877,11 @@ $("account-picker").addEventListener("change", (e) => {
   $("travel-live").hidden = true;
   loadAll();
 });
+
+$("window-picker").addEventListener("change", (e) => {
+  state.windowDays = Number(e.target.value);
+  loadAll();
+});
 $("travel").addEventListener("input", onTravel);
 // pointer and keyboard both count as "in progress": a refresh landing between
 // two arrow-key presses is just as disruptive as one landing mid-drag
@@ -704,7 +902,11 @@ $("balance-table-toggle").addEventListener("click", (e) => {
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(renderBalance, 150);
+  resizeTimer = setTimeout(() => {
+    renderBalance();
+    renderAccounts(state.balanceSeries);
+    renderSpending(state.spendSeries);
+  }, 150);
 });
 
 (function init() {

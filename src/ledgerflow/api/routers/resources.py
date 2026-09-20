@@ -452,6 +452,78 @@ def spend_by_category(
     ])
 
 
+@router.get("/analytics/balance_history")
+def balance_history(
+    ctx: TenantContext = Depends(context),
+    days: int = Query(180, ge=1, le=1095),
+    points: int = Query(60, ge=2, le=365),
+) -> dict[str, Any]:
+    """What you have, over time: every asset and liability account."""
+    with read_only() as uow:
+        rows = uow.accounts.balance_history(
+            ctx.tenant_id, ctx.mode, days=days, points=points
+        )
+
+    series: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        s = series.setdefault(row["id"], {
+            "object": "balance_series", "account": row["id"],
+            "name": row["name"], "type": row["type"], "points": [],
+        })
+        s["points"].append({
+            "at": int(row["at"].timestamp()), "balance": int(row["balance_minor"]),
+        })
+
+    # an account that never moved is noise on a chart, not information
+    live = [s for s in series.values() if any(p["balance"] for p in s["points"])]
+    return serializers.listing(sorted(live, key=lambda s: s["name"]))
+
+
+@router.get("/analytics/spending_history")
+def spending_history(
+    ctx: TenantContext = Depends(context),
+    days: int = Query(180, ge=1, le=1095),
+    points: int = Query(60, ge=2, le=365),
+    top: int = Query(5, ge=1, le=8),
+) -> dict[str, Any]:
+    """What you spent, over time: cumulative by category.
+
+    Everything past the top N folds into "Other". Past roughly seven colour
+    classes adjacent categories stop being distinguishable, so a chart with
+    eleven series is a chart nobody can read -- the tail belongs in one bucket
+    or in the table, not in a ninth hue.
+    """
+    with read_only() as uow:
+        rows = uow.normalization.spending_history(
+            ctx.tenant_id, ctx.mode, days=days, points=points
+        )
+
+    series: dict[str, list[dict[str, int]]] = {}
+    for row in rows:
+        series.setdefault(row["category"], []).append({
+            "at": int(row["at"].timestamp()), "spend": int(row["spend_minor"]),
+        })
+
+    ranked = sorted(series.items(), key=lambda kv: kv[1][-1]["spend"] if kv[1] else 0,
+                    reverse=True)
+    head, tail = ranked[:top], ranked[top:]
+
+    out = [{"object": "spend_series", "category": name, "points": points_}
+           for name, points_ in head if points_ and points_[-1]["spend"] > 0]
+
+    if tail:
+        merged: dict[int, int] = {}
+        for _, points_ in tail:
+            for point in points_:
+                merged[point["at"]] = merged.get(point["at"], 0) + point["spend"]
+        if any(merged.values()):
+            out.append({
+                "object": "spend_series", "category": "Other",
+                "points": [{"at": at, "spend": v} for at, v in sorted(merged.items())],
+            })
+    return serializers.listing(out)
+
+
 @router.post("/reconcile")
 def reconcile(ctx: TenantContext = Depends(context)) -> dict[str, Any]:
     """Recompute every balance from entries and diff against the snapshot cache."""

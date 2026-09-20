@@ -52,6 +52,10 @@ DEFAULT_ACCOUNTS = [
     ("Revenue:Income",          "revenue",   "income",        None),
     ("Revenue:Interest",        "revenue",   "interest",      None),
     ("Revenue:Refunds",         "revenue",   "refunds",       None),
+    # Mark-to-market gains. An investment account that only ever equals what
+    # you put into it is a savings account with extra steps -- the whole point
+    # is that its value moves independently of your contributions.
+    ("Revenue:Investment Gains","revenue",   "gains",         None),
 
     # --- expenses: where it goes -----------------------------------------
     ("Expenses:Rent",           "expense",   "rent",          None),
@@ -67,6 +71,7 @@ DEFAULT_ACCOUNTS = [
     ("Expenses:Education",      "expense",   "education",     None),
     ("Expenses:General",        "expense",   "general",       None),
     ("Expenses:Fees",           "expense",   "fees",          None),
+    ("Expenses:Investment Losses", "expense", "losses",        None),
 ]
 
 

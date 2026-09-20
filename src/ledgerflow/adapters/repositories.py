@@ -229,6 +229,43 @@ class AccountRepository(_Repo):
             (account_id,),
         )
 
+    def balance_history(
+        self, tenant_id: str, mode: str, *, days: int = 180, points: int = 60,
+        types: Sequence[str] = ("asset", "liability"),
+    ) -> list[dict[str, Any]]:
+        """Each account's balance at a series of instants.
+
+        Cumulative to each bucket, not per-bucket: a balance is a stock, not a
+        flow. Bucketing the flow and summing it client-side would give the same
+        curve only if the window started at the account's first entry, which it
+        does not.
+        """
+        return self._all(
+            """
+            WITH bucket AS (
+                SELECT generate_series(
+                    now() - make_interval(days => %(days)s),
+                    now(),
+                    make_interval(secs => %(days)s * 86400.0 / %(points)s)
+                ) AS at
+            )
+            SELECT a.id, a.name, a.type, b.at,
+                   COALESCE(SUM(CASE WHEN e.direction = a.normal_balance
+                                     THEN e.amount_minor ELSE -e.amount_minor END), 0)::bigint
+                       AS balance_minor
+              FROM accounts a
+             CROSS JOIN bucket b
+              LEFT JOIN entries e
+                     ON e.account_id = a.id AND e.effective_at <= b.at
+             WHERE a.tenant_id = %(tenant)s AND a.mode = %(mode)s
+               AND a.type = ANY(%(types)s)
+             GROUP BY a.id, a.name, a.type, b.at
+             ORDER BY a.name, b.at
+            """,
+            {"tenant": tenant_id, "mode": mode, "days": days,
+             "points": points, "types": list(types)},
+        )
+
     def reconcile(self) -> list[dict[str, Any]]:
         """Recompute every balance from entries and diff against the cache.
 
@@ -845,6 +882,11 @@ class NormalizationRepository(_Repo):
             "a.tenant_id = %(tenant)s",
             "a.mode = %(mode)s",
             "a.type = 'expense'",
+            # A mark-to-market loss is booked as an expense because that is
+            # what keeps the ledger balanced, but it is not money that left to
+            # buy anything. Showing it beside groceries in a "where did it go"
+            # panel answers a question nobody asked.
+            "a.name <> 'Expenses:Investment Losses'",
             "e.effective_at > now() - make_interval(days => %(days)s)",
         ]
         params: dict[str, Any] = {"tenant": tenant_id, "days": days, "mode": mode}
@@ -882,6 +924,42 @@ class NormalizationRepository(_Repo):
              ORDER BY 2 DESC
             """,
             params,
+        )
+
+    def spending_history(
+        self, tenant_id: str, mode: str, *, days: int = 180, points: int = 60
+    ) -> list[dict[str, Any]]:
+        """Cumulative spend per category, within the window.
+
+        Bounded to the window on purpose. An expense account never decreases,
+        so a to-date cumulative would start each series at whatever the account
+        had already accumulated and flatten the part being asked about.
+        """
+        return self._all(
+            """
+            WITH bucket AS (
+                SELECT generate_series(
+                    now() - make_interval(days => %(days)s),
+                    now(),
+                    make_interval(secs => %(days)s * 86400.0 / %(points)s)
+                ) AS at
+            )
+            SELECT split_part(a.name, ':', 2) AS category, b.at,
+                   COALESCE(SUM(CASE WHEN e.direction = 'debit'
+                                     THEN e.amount_minor ELSE -e.amount_minor END), 0)::bigint
+                       AS spend_minor
+              FROM accounts a
+             CROSS JOIN bucket b
+              LEFT JOIN entries e
+                     ON e.account_id = a.id
+                    AND e.effective_at <= b.at
+                    AND e.effective_at > now() - make_interval(days => %(days)s)
+             WHERE a.tenant_id = %(tenant)s AND a.mode = %(mode)s AND a.type = 'expense'
+               AND a.name <> 'Expenses:Investment Losses'
+             GROUP BY 1, b.at
+             ORDER BY 1, b.at
+            """,
+            {"tenant": tenant_id, "mode": mode, "days": days, "points": points},
         )
 
     def version_diff(self, left: int, right: int) -> list[dict[str, Any]]:

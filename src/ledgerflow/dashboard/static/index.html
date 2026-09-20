@@ -13,6 +13,12 @@
   <span class="sub" id="mode-line">real-time financial event platform</span>
   <span class="spacer"></span>
   <select id="account-picker" aria-label="Account"></select>
+  <select id="window-picker" aria-label="Time window">
+    <option value="30">30 days</option>
+    <option value="90">90 days</option>
+    <option value="180" selected>180 days</option>
+    <option value="365">1 year</option>
+  </select>
   <button id="theme-toggle" title="Toggle theme">◐</button>
   <button id="refresh">Refresh</button>
 </header>
@@ -26,6 +32,47 @@
       Ledger drift must always be zero &mdash; a nonzero value means money was created or destroyed.
     </p>
     <div class="tiles" id="health-tiles"></div>
+  </section>
+
+  <section class="card col-8" aria-labelledby="accounts-h">
+    <h2 id="accounts-h">Accounts over time</h2>
+    <p class="hint">
+      What you have and what you owe. Assets above the line, the credit card
+      below it &mdash; debt plotted as a positive number sits in the same space
+      as savings and reads like money you have.
+    </p>
+    <div class="legend" id="accounts-legend"></div>
+    <svg id="accounts-chart" class="chart" role="img"
+         aria-label="Account balances over time"></svg>
+  </section>
+
+  <section class="card col-4" aria-labelledby="networth-h">
+    <h2 id="networth-h">Position</h2>
+    <p class="hint">Assets minus what you owe, across the selected window.</p>
+    <div class="tiles tiles--stack" id="networth-tiles"></div>
+  </section>
+
+  <section class="card col-6" aria-labelledby="spending-h">
+    <h2 id="spending-h">Spending over time</h2>
+    <p class="hint">
+      Cumulative within the window, by expense account. Rising lines are money
+      leaving &mdash; a different question from the chart above, so a different
+      axis and a different panel.
+    </p>
+    <div class="legend" id="spending-legend"></div>
+    <svg id="spending-chart" class="chart" role="img"
+         aria-label="Cumulative spending by category"></svg>
+  </section>
+
+  <section class="card col-6" aria-labelledby="category-h">
+    <h2 id="category-h">Spend by category</h2>
+    <p class="hint">
+      Click a category to filter the feed. Grouped by the expense account each
+      posting was booked to, so these totals reconcile exactly with the ledger
+      &mdash; not by the normalizer's guess at a merchant, which is allowed to
+      be &ldquo;I don't know.&rdquo;
+    </p>
+    <svg id="category-chart" class="chart" role="img" aria-label="Spend by category"></svg>
   </section>
 
   <section class="card col-8" aria-labelledby="balance-h">
@@ -50,16 +97,6 @@
     <div class="scroll" id="signals"></div>
   </section>
 
-  <section class="card col-6" aria-labelledby="category-h">
-    <h2 id="category-h">Spend by category</h2>
-    <p class="hint">
-      Click a category to filter the feed. Grouped by the expense account each
-      posting was booked to, so these totals reconcile exactly with the ledger
-      &mdash; not by the normalizer's guess at a merchant, which is allowed to
-      be &ldquo;I don't know.&rdquo;
-    </p>
-    <svg id="category-chart" class="chart" role="img" aria-label="Spend by category"></svg>
-  </section>
 
   <section class="card col-6" aria-labelledby="feed-h">
     <h2 id="feed-h">Transaction feed</h2>
@@ -70,7 +107,7 @@
     <div class="scroll" id="feed"></div>
   </section>
 
-  <section class="card" aria-labelledby="explorer-h">
+  <section class="card col-6" aria-labelledby="explorer-h">
     <h2 id="explorer-h">Ledger explorer</h2>
     <p class="hint">Every transaction is two or more entries whose debits and credits cancel, per currency.</p>
     <div id="explorer"><p class="empty">Select a transaction from the feed.</p></div>
