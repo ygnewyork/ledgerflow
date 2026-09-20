@@ -329,14 +329,19 @@ class TransactionRepository(_Repo):
         tenant_id: str,
         mode: str,
         account_id: str | None = None,
+        category: str | None = None,
         starting_after: str | None = None,
         limit: int = 25,
     ) -> list[dict[str, Any]]:
-        """Cursor pagination on a monotonic id.
+        """Cursor pagination on a monotonic id, with the normalized view attached.
 
         Offset pagination over an append-only log silently skips rows: new
-        entries arrive at the head between requests, so page 2 is not the
-        page 2 the caller expected. A cursor cannot skip.
+        entries arrive at the head between requests, so page 2 is not the page
+        2 the caller expected. A cursor cannot skip.
+
+        The LATERAL picks the newest normalizer version per transaction, so
+        shipping a new normalizer changes what this returns without a
+        migration -- and without this query needing to know the version exists.
         """
         clauses = ["t.tenant_id = %(tenant)s", "t.mode = %(mode)s"]
         params: dict[str, Any] = {"tenant": tenant_id, "mode": mode, "limit": limit}
@@ -349,9 +354,45 @@ class TransactionRepository(_Repo):
                 "WHERE e.transaction_id = t.id AND e.account_id = %(account)s)"
             )
             params["account"] = account_id
+        if category:
+            # Same definition the breakdown uses: the expense account the money
+            # was booked to. Filtering on the normalizer's category instead
+            # would return a different set of rows than the bar you clicked.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM entries e2 JOIN accounts a2 ON a2.id = e2.account_id "
+                "WHERE e2.transaction_id = t.id AND a2.type = 'expense' "
+                "AND split_part(a2.name, ':', 2) = %(category)s)"
+            )
+            params["category"] = category
+
         return self._all(
-            f"SELECT t.* FROM transactions t WHERE {' AND '.join(clauses)} "
-            "ORDER BY t.id DESC LIMIT %(limit)s",
+            f"""
+            SELECT t.*,
+                   norm.merchant_name, norm.confidence,
+                   raw.descriptor,
+                   -- the LEDGER's category: the expense account this posting
+                   -- was booked to. The same definition the breakdown groups
+                   -- by and the filter matches on, so a row can never appear
+                   -- under a category whose chip says something else.
+                   booked.category
+              FROM transactions t
+              LEFT JOIN raw_transactions raw ON raw.transaction_id = t.id
+              LEFT JOIN LATERAL (
+                   SELECT n.merchant_name, n.confidence
+                     FROM normalized_transactions n
+                    WHERE n.raw_transaction_id = raw.id
+                    ORDER BY n.normalizer_version DESC
+                    LIMIT 1
+              ) norm ON TRUE
+              LEFT JOIN LATERAL (
+                   SELECT split_part(a2.name, ':', 2) AS category
+                     FROM entries e2 JOIN accounts a2 ON a2.id = e2.account_id
+                    WHERE e2.transaction_id = t.id AND a2.type = 'expense'
+                    LIMIT 1
+              ) booked ON TRUE
+             WHERE {' AND '.join(clauses)}
+             ORDER BY t.id DESC LIMIT %(limit)s
+            """,
             params,
         )
 
@@ -783,29 +824,61 @@ class NormalizationRepository(_Repo):
         )  # type: ignore[return-value]
 
     def spend_by_category(
-        self, tenant_id: str, account_id: str | None = None, days: int = 90
+        self, tenant_id: str, account_id: str | None = None, days: int = 90,
+        mode: str = "test",
     ) -> list[dict[str, Any]]:
-        """Spend grouped by resolved category.
+        """Spend grouped by the expense account it was booked to.
 
-        Unresolved descriptors are counted under 'Uncategorized' rather than
-        dropped. A breakdown that silently omits what the normalizer could not
-        resolve overstates every category it does show.
+        Deliberately the LEDGER's categories, not the normalizer's merchant
+        categories. The normalizer guesses a category from a descriptor and is
+        allowed to say "I don't know"; the posting rule already decided which
+        expense account the money hit, and it is never unknown. Grouping by the
+        guess put rent -- whose landlord no merchant dictionary contains --
+        into "Uncategorized" as the single largest line, which is both wrong
+        and the opposite of what the panel is for.
+
+        So the amounts reconcile exactly with the ledger, and the normalizer's
+        accuracy is reported alongside as `unresolved` rather than by silently
+        eating a category.
         """
-        clauses = ["n.tenant_id = %(tenant)s", "r.occurred_at > now() - make_interval(days => %(days)s)"]
-        params: dict[str, Any] = {"tenant": tenant_id, "days": days}
+        clauses = [
+            "a.tenant_id = %(tenant)s",
+            "a.mode = %(mode)s",
+            "a.type = 'expense'",
+            "e.effective_at > now() - make_interval(days => %(days)s)",
+        ]
+        params: dict[str, Any] = {"tenant": tenant_id, "days": days, "mode": mode}
         if account_id:
-            clauses.append("n.account_id = %(account)s")
+            # spend funded BY this account, wherever it was booked
+            clauses.append(
+                "EXISTS (SELECT 1 FROM entries f WHERE f.transaction_id = e.transaction_id "
+                "AND f.account_id = %(account)s)"
+            )
             params["account"] = account_id
+
         return self._all(
             f"""
-            SELECT COALESCE(n.category, 'Uncategorized') AS category,
-                   SUM(r.amount_minor)::bigint AS spend_minor,
+            SELECT split_part(a.name, ':', 2) AS category,
+                   -- debits increase an expense, refunds credit it back; the
+                   -- net is what was actually spent
+                   SUM(CASE WHEN e.direction = 'debit'
+                            THEN e.amount_minor ELSE -e.amount_minor END)::bigint AS spend_minor,
                    COUNT(*)::int AS txn_count,
-                   (COUNT(*) FILTER (WHERE n.merchant_id IS NULL))::int AS unresolved
-              FROM normalized_transactions n
-              JOIN raw_transactions r ON r.id = n.raw_transaction_id
+                   (COUNT(*) FILTER (
+                       WHERE raw.id IS NOT NULL AND norm.merchant_id IS NULL
+                   ))::int AS unresolved
+              FROM entries e
+              JOIN accounts a ON a.id = e.account_id
+              LEFT JOIN raw_transactions raw ON raw.transaction_id = e.transaction_id
+              LEFT JOIN LATERAL (
+                   SELECT n.merchant_id FROM normalized_transactions n
+                    WHERE n.raw_transaction_id = raw.id
+                    ORDER BY n.normalizer_version DESC LIMIT 1
+              ) norm ON TRUE
              WHERE {' AND '.join(clauses)}
              GROUP BY 1
+            HAVING SUM(CASE WHEN e.direction = 'debit'
+                            THEN e.amount_minor ELSE -e.amount_minor END) > 0
              ORDER BY 2 DESC
             """,
             params,

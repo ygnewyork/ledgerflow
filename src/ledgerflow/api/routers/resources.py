@@ -147,6 +147,7 @@ def create_transaction(
 def list_transactions(
     ctx: TenantContext = Depends(context),
     account: str | None = None,
+    category: str | None = Query(None, description="resolved category, or 'Uncategorized'"),
     starting_after: str | None = None,
     limit: int = Query(25, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -155,7 +156,7 @@ def list_transactions(
         # fetch one extra to answer has_more without a second count query
         rows = uow.transactions.list(
             tenant_id=ctx.tenant_id, mode=ctx.mode, account_id=account_id,
-            starting_after=starting_after, limit=limit + 1,
+            category=category, starting_after=starting_after, limit=limit + 1,
         )
         has_more = len(rows) > limit
         rows = rows[:limit]
@@ -438,7 +439,7 @@ def spend_by_category(
 ) -> dict[str, Any]:
     with read_only() as uow:
         account_id = services.resolve_account(uow, ctx, account)["id"] if account else None
-        rows = uow.normalization.spend_by_category(ctx.tenant_id, account_id, days)
+        rows = uow.normalization.spend_by_category(ctx.tenant_id, account_id, days, ctx.mode)
     return serializers.listing([
         {
             "object": "category_spend",

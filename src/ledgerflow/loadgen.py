@@ -1,55 +1,91 @@
-"""Synthetic transaction generator.
+"""Synthetic history for one person's finances.
 
-Produces data with the shape real data has -- recurring subscriptions, a daily
-coffee habit, weekly groceries, a biweekly paycheck, occasional large purchases
--- because uniformly random amounts make every fraud rule either fire constantly
-or never, and make the dashboard look like static.
+Uniformly random amounts make every fraud rule either fire constantly or never,
+and make a dashboard look like static. Real money has structure: a paycheck
+every two weeks, rent on the 1st, coffee most mornings, groceries most weeks,
+a card you run up and pay off, and a slow drift into savings and investments.
+This generates that structure.
 
-It also injects two deliberate anomalies so the risk rules have something true
-to find: a card-testing burst (many tiny charges in minutes) and a single
-outlier purchase far outside the account's own distribution.
+The money model, which is the point:
+
+    Revenue:Income ──> Assets:Checking ──┬──> Expenses:*        (debit card)
+                                         ├──> Assets:Savings    (transfer)
+                                         ├──> Assets:Investments(transfer)
+                                         └──> Liabilities:Card  (card payoff)
+
+    Liabilities:Card ──> Expenses:*                             (credit card)
+
+Most day-to-day spending goes on the card, which makes the card balance GROW --
+a credit on a liability increases it. Once a month that balance is paid down
+from checking. Watching those two accounts move against each other on the
+dashboard is the clearest illustration of why liabilities and assets have
+opposite normal balances.
+
+Two anomalies are planted on purpose so the fraud rules have something true to
+find: a card-testing burst, and one purchase far outside the account's own
+distribution.
 """
 
 from __future__ import annotations
 
 import random
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Callable, Iterator
 
 from . import ids
 from .adapters.db import unit_of_work
 from .application.services import TenantContext, post_transaction
 from .domain.money import Money
 
+# ---------------------------------------------------------------------------
+# What this person buys
+# ---------------------------------------------------------------------------
+
 # (descriptor template, expense account, min cents, max cents, days between)
 HABITS = [
-    ("SQ *TST* STARBUCKS 800-782-7282 CA", "food", 450, 850, 1),
-    ("CHIPOTLE {n} AUSTIN TX", "food", 1100, 1800, 4),
-    ("WHOLEFDS MKT #{n} AUSTIN TX", "groceries", 4200, 14500, 7),
-    ("H-E-B #{n} AUSTIN TX", "groceries", 3100, 11200, 5),
-    ("AMZN Mktp US*{code}", "shopping", 1200, 8900, 3),
-    ("UBER   *TRIP HELP.UBER.COM CA", "transport", 900, 3400, 6),
-    ("SHELL OIL {n} HOUSTON TX", "transport", 3500, 7200, 9),
-    ("TARGET        T-{n}", "shopping", 2200, 12000, 11),
-    ("CVS/PHARMACY #{n}", "health", 800, 4500, 14),
+    ("SQ *TST* STARBUCKS 800-782-7282 CA",  "food",          450,   850,  1.4),
+    ("CHIPOTLE {n} AUSTIN TX",              "food",         1100,  1800,  4),
+    ("TST* PINTHOUSE PIZZA AUSTIN",         "food",         1800,  4200,  9),
+    ("WHOLEFDS MKT #{n} AUSTIN TX",         "groceries",    4200, 14500,  7),
+    ("H-E-B #{n} AUSTIN TX",                "groceries",    3100, 11200,  5),
+    ("AMZN Mktp US*{code}",                 "shopping",     1200,  8900,  3),
+    ("TARGET        T-{n}",                 "shopping",     2200, 12000, 11),
+    ("UBER   *TRIP HELP.UBER.COM CA",       "transport",     900,  3400,  6),
+    ("SHELL OIL {n} HOUSTON TX",            "transport",    3500,  7200,  9),
+    ("CVS/PHARMACY #{n}",                   "health",        800,  4500, 14),
+    ("STEAMGAMES.COM 4259522985 WA",        "entertainment", 999,  5999, 21),
 ]
 
+# Charged to the card on the same day each month.
 SUBSCRIPTIONS = [
-    ("NETFLIX.COM 866-579-7172 CA", "entertainment", 1599, 30),
-    ("SPOTIFY USA 8887771111 NY", "entertainment", 1199, 30),
-    ("AT&T *PAYMENT 800-288-2020 TX", "bills", 8500, 30),
-    ("COMCAST CABLE COMM 800-COMCAST", "bills", 7999, 30),
+    ("NETFLIX.COM 866-579-7172 CA",         "subscriptions", 1599),
+    ("SPOTIFY USA 8887771111 NY",           "subscriptions", 1199),
+    ("AT&T *PAYMENT 800-288-2020 TX",       "bills",         8500),
+    ("COMCAST CABLE COMM 800-COMCAST",      "bills",         7999),
 ]
 
-# Descriptors with no dictionary entry. Real ingest always has a tail the
-# normalizer cannot resolve, and a demo where everything resolves is lying.
+# The tail every real ingest has: descriptors the dictionary does not know.
+# A demo where everything resolves is lying about the problem.
 UNKNOWN = [
     "SQ *BLUE BOTTLE 4411 OAKLAND CA",
-    "TST* PINTHOUSE PIZZA AUSTIN",
     "PY *LOCAL FARMERS MKT",
-    "ZELLE TO J SMITH 20260817",
+    "ZELLE TO J SMITH {n}",
+    "VENMO *ROOMMATE UTILITIES",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """One posting to make, at one instant."""
+
+    at: datetime
+    kind: str
+    accounts: dict[str, str]
+    amount: int
+    descriptor: str | None = None
+    note: str = ""
 
 
 def _descriptor(template: str, rng: random.Random) -> str:
@@ -59,115 +95,258 @@ def _descriptor(template: str, rng: random.Random) -> str:
     )
 
 
-def _events(start: datetime, days: int, rng: random.Random) -> Iterator[tuple[datetime, str, str, int]]:
-    """Yield (when, descriptor, expense account, amount) in time order."""
-    out: list[tuple[datetime, str, str, int]] = []
+# ---------------------------------------------------------------------------
+# The life
+# ---------------------------------------------------------------------------
 
+
+def _timeline(start: datetime, days: int, rng: random.Random) -> list[Event]:
+    end = start + timedelta(days=days)
+    events: list[Event] = []
+
+    # --- income: a paycheck every two weeks, into checking ----------------
+    # Slightly variable, the way hourly or bonus-inclusive pay is.
+    pay_day = start
+    while pay_day < end:
+        events.append(Event(
+            at=pay_day.replace(hour=6, minute=rng.randint(0, 40)),
+            kind="deposit",
+            accounts={"destination": "checking", "income": "income"},
+            amount=rng.randint(241_000, 289_000),
+            note="biweekly paycheck",
+        ))
+        pay_day += timedelta(days=14)
+
+    # --- rent: the 1st, the largest recurring outflow ---------------------
+    rent = rng.choice([132_500, 139_500, 145_000])
+    month = start.replace(day=1)
+    while month < end:
+        due = month.replace(hour=9, minute=5)
+        if due >= start:
+            events.append(Event(
+                at=due, kind="card_purchase",
+                accounts={"expense": "rent", "funding": "checking"},
+                amount=rent,
+                descriptor="WEST CAMPUS PROPERTIES RENT",
+                note="rent",
+            ))
+        month = (month + timedelta(days=32)).replace(day=1)
+
+    # --- paying yourself first: savings and investments -------------------
+    # Two days after the first paycheck of the month, which is when most
+    # people's automatic transfers are actually scheduled.
+    month = start.replace(day=1)
+    while month < end:
+        when = month.replace(day=3, hour=7, minute=0)
+        if start <= when < end:
+            events.append(Event(
+                at=when, kind="transfer",
+                accounts={"source": "checking", "destination": "savings"},
+                amount=rng.randint(35_000, 60_000), note="monthly savings",
+            ))
+            events.append(Event(
+                at=when + timedelta(minutes=3), kind="transfer",
+                accounts={"source": "checking", "destination": "investments"},
+                amount=rng.randint(25_000, 45_000), note="brokerage contribution",
+            ))
+        month = (month + timedelta(days=32)).replace(day=1)
+
+    # --- subscriptions, on the card ---------------------------------------
+    for template, account, amount in SUBSCRIPTIONS:
+        when = start + timedelta(days=rng.randint(0, 27))
+        while when < end:
+            events.append(Event(
+                at=when.replace(hour=3, minute=rng.randint(0, 59)),
+                kind="card_purchase",
+                accounts={"expense": account, "funding": "card"},
+                amount=amount, descriptor=template, note="subscription",
+            ))
+            when += timedelta(days=30)
+
+    # --- everyday spending -------------------------------------------------
+    # Most of it on the card, some on the debit card. Mixing the two is what
+    # makes the card payoff below mean anything.
     for template, account, low, high, cadence in HABITS:
         when = start
-        while when < start + timedelta(days=days):
-            # jitter the cadence and the hour: nobody buys coffee at exactly
-            # 09:00 every 24 hours
-            when += timedelta(days=max(1, rng.gauss(cadence, cadence * 0.3)))
-            if when >= start + timedelta(days=days):
+        while when < end:
+            when += timedelta(days=max(0.5, rng.gauss(cadence, cadence * 0.35)))
+            if when >= end:
                 break
-            moment = when.replace(
-                hour=rng.randint(7, 21), minute=rng.randint(0, 59), second=rng.randint(0, 59)
-            )
-            out.append((moment, _descriptor(template, rng), account, rng.randint(low, high)))
+            funding = "card" if rng.random() < 0.72 else "checking"
+            events.append(Event(
+                at=when.replace(hour=rng.randint(7, 21), minute=rng.randint(0, 59)),
+                kind="card_purchase",
+                accounts={"expense": account, "funding": funding},
+                amount=rng.randint(low, high),
+                descriptor=_descriptor(template, rng),
+            ))
 
-    for template, account, amount, cadence in SUBSCRIPTIONS:
-        when = start + timedelta(days=rng.randint(0, 28))
-        while when < start + timedelta(days=days):
-            out.append((when.replace(hour=3, minute=rng.randint(0, 59)), template, account, amount))
-            when += timedelta(days=cadence)
+    # --- cash: withdraw from checking, then spend it -----------------------
+    # Without this the Cash account exists and never moves, which is worse than
+    # not having it: an account that is always zero is noise on every screen.
+    when = start + timedelta(days=rng.randint(1, 9))
+    while when < end:
+        events.append(Event(
+            at=when.replace(hour=12, minute=rng.randint(0, 59)),
+            kind="transfer",
+            accounts={"source": "checking", "destination": "cash"},
+            amount=rng.choice([4_000, 6_000, 10_000]),
+            note="ATM withdrawal",
+        ))
+        # a couple of small cash purchases follow, the way they do
+        for _ in range(rng.randint(1, 3)):
+            spent = when + timedelta(days=rng.uniform(0.2, 9))
+            if spent >= end:
+                break
+            events.append(Event(
+                at=spent, kind="card_purchase",
+                accounts={"expense": rng.choice(["food", "general", "transport"]),
+                          "funding": "cash"},
+                amount=rng.randint(400, 2_500),
+                descriptor=None, note="cash",
+            ))
+        when += timedelta(days=rng.randint(16, 28))
 
-    for _ in range(max(1, days // 20)):
+    # --- the unresolvable tail ---------------------------------------------
+    for _ in range(max(2, days // 12)):
         when = start + timedelta(days=rng.uniform(0, days))
-        out.append((when, rng.choice(UNKNOWN), "general", rng.randint(900, 6500)))
-
-    # --- anomaly 1: card testing. many tiny charges inside a few minutes.
-    burst_at = start + timedelta(days=days * 0.8)
-    for i in range(14):
-        out.append((
-            burst_at + timedelta(seconds=i * 40),
-            f"WL *DIGITALGOODS {rng.randint(100, 999)}",
-            "general",
-            rng.randint(95, 320),
+        events.append(Event(
+            at=when, kind="card_purchase",
+            accounts={"expense": "general", "funding": "checking"},
+            amount=rng.randint(900, 6500),
+            descriptor=_descriptor(rng.choice(UNKNOWN), rng),
         ))
 
-    # --- anomaly 2: one purchase far outside this account's distribution
-    out.append((
-        start + timedelta(days=days * 0.6),
-        "MARRIOTT HOTELS 8882367687 MD",
-        "travel",
-        rng.randint(180_000, 320_000),
+    # --- interest, and the occasional refund -------------------------------
+    month = start.replace(day=1)
+    while month < end:
+        when = month.replace(day=28, hour=23, minute=30)
+        if start <= when < end:
+            events.append(Event(
+                at=when, kind="deposit",
+                accounts={"destination": "savings", "income": "interest"},
+                amount=rng.randint(180, 1_400), note="savings interest",
+            ))
+        month = (month + timedelta(days=32)).replace(day=1)
+
+    for _ in range(max(1, days // 45)):
+        when = start + timedelta(days=rng.uniform(5, days))
+        events.append(Event(
+            at=when, kind="refund",
+            accounts={"expense": "shopping", "funding": "card"},
+            amount=rng.randint(1_800, 9_500),
+            descriptor="AMZN Mktp US*{} REFUND".format(
+                "".join(rng.choices("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789", k=9))),
+            note="returned an order",
+        ))
+
+    # --- anomaly 1: card testing -------------------------------------------
+    burst = start + timedelta(days=days * 0.82)
+    for i in range(14):
+        events.append(Event(
+            at=burst + timedelta(seconds=i * 40), kind="card_purchase",
+            accounts={"expense": "general", "funding": "card"},
+            amount=rng.randint(95, 320),
+            descriptor=f"WL *DIGITALGOODS {rng.randint(100, 999)}",
+            note="card-testing burst",
+        ))
+
+    # --- anomaly 2: one purchase unlike the rest ---------------------------
+    events.append(Event(
+        at=start + timedelta(days=days * 0.62), kind="card_purchase",
+        accounts={"expense": "travel", "funding": "card"},
+        amount=rng.randint(180_000, 320_000),
+        descriptor="MARRIOTT HOTELS 8882367687 MD",
+        note="outlier purchase",
     ))
 
-    out.sort(key=lambda row: row[0])
-    yield from out
+    events.sort(key=lambda e: e.at)
+    return events
+
+
+def _with_card_payoffs(events: list[Event], start: datetime, days: int,
+                       rng: random.Random) -> list[Event]:
+    """Pay the card down on the 15th, by what was actually charged to it.
+
+    Computed from the events themselves rather than a fixed number, so the
+    payment tracks real spending -- and so a month with a big travel charge
+    produces a visibly bigger payment, which is the behaviour you want the
+    dashboard to show.
+    """
+    end = start + timedelta(days=days)
+    out = list(events)
+
+    month = start.replace(day=1)
+    while month < end:
+        due = month.replace(day=15, hour=8, minute=0)
+        window_start = due - timedelta(days=30)
+        if start <= due < end:
+            charged = sum(
+                e.amount for e in events
+                if window_start <= e.at < due
+                and e.accounts.get("funding") == "card"
+                and e.kind == "card_purchase"
+            )
+            refunded = sum(
+                e.amount for e in events
+                if window_start <= e.at < due
+                and e.accounts.get("funding") == "card"
+                and e.kind == "refund"
+            )
+            owed = charged - refunded
+            if owed > 0:
+                # Most months paid in full; occasionally a partial payment,
+                # which is what leaves a carried balance to look at.
+                paid = owed if rng.random() < 0.8 else int(owed * rng.uniform(0.45, 0.8))
+                out.append(Event(
+                    at=due, kind="transfer",
+                    accounts={"source": "checking", "destination": "card"},
+                    amount=paid, note="credit card payment",
+                ))
+        month = (month + timedelta(days=32)).replace(day=1)
+
+    out.sort(key=lambda e: e.at)
+    return out
 
 
 def generate(
     *, tenant_id: str, count: int = 1000, days: int = 90, seed: int = 17, mode: str = "test"
 ) -> dict[str, int]:
-    """Write synthetic history straight through the service layer.
+    """Write a person's financial history straight through the service layer.
 
-    Deliberately not through HTTP: this is about filling the ledger, not about
-    measuring the API. The load test that measures the API lives in
-    ``tests/test_load.py`` and goes over the wire.
+    Deliberately not over HTTP: this fills the ledger, it does not measure the
+    API. The load test that measures the API is `python -m ledgerflow.bench`.
     """
     rng = random.Random(seed)
     ctx = TenantContext(tenant_id=tenant_id, api_key_id="loadgen", mode=mode)
-    start = datetime.now(timezone.utc) - timedelta(days=days)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
 
-    written = 0
-    paychecks = 0
+    events = _with_card_payoffs(_timeline(start, days, rng), start, days, rng)
+    events = [e for e in events if e.at <= now][:count]
+
+    tally: dict[str, int] = {}
     started = time.perf_counter()
 
     with unit_of_work() as uow:
-        # fund the account first, in the same history: a ledger whose balance
-        # floor is enforced will reject purchases from an empty account, and
-        # that rejection is correct behaviour, not a generator bug
-        when = start
-        while when < datetime.now(timezone.utc):
+        for event in events:
             post_transaction(
-                uow, ctx, kind="deposit",
-                accounts={"destination": "checking", "income": "income"},
-                amount=Money(rng.randint(240_000, 320_000), "usd"),
-                effective_at=when,
-                metadata={"source": "loadgen"},
+                uow, ctx,
+                kind=event.kind,
+                accounts=event.accounts,
+                amount=Money(event.amount, "usd"),
+                effective_at=event.at,
+                descriptor=event.descriptor,
+                metadata={"source": "loadgen", **({"note": event.note} if event.note else {})},
             )
-            paychecks += 1
-            when += timedelta(days=14)
-
-        for moment, descriptor, account, amount in _events(start, days, rng):
-            if written >= count:
-                break
-            post_transaction(
-                uow, ctx, kind="card_purchase",
-                accounts={"expense": account, "funding": "checking"},
-                amount=Money(amount, "usd"),
-                effective_at=moment,
-                descriptor=descriptor,
-                metadata={"source": "loadgen"},
-            )
-            written += 1
+            tally[event.kind] = tally.get(event.kind, 0) + 1
 
     elapsed = time.perf_counter() - started
-    if written < count:
-        # say so rather than silently under-delivering: the habit cadences,
-        # not the cap, decide how many purchases 90 days contains
-        print(
-            f"note: {days} days of these habits yields {written} purchases; "
-            f"--count {count} was not reached. raise --days for more history."
-        )
     result = {
-        "transactions": written + paychecks,
-        "paychecks": paychecks,
-        "purchases": written,
+        "transactions": len(events),
+        **tally,
         "seconds": round(elapsed, 2),
-        "per_second": round((written + paychecks) / elapsed) if elapsed else 0,
+        "per_second": round(len(events) / elapsed) if elapsed else 0,
     }
     print(result)
     return result

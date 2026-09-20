@@ -20,21 +20,47 @@ from .adapters.db import migrate, read_only, unit_of_work
 from .application.services import TenantContext
 
 
+# A personal chart of accounts, in the five categories double-entry defines.
+# The shape is the teaching tool: money arrives as revenue, sits in assets,
+# leaves as expenses, and a credit card is a liability that grows when you
+# spend and shrinks when you pay it -- which is why a card purchase CREDITS
+# the card while a checking purchase CREDITS checking, and both are correct.
+#
+#   (display name, type, external id, minimum balance)
+#
+# A minimum balance of 0 means the account may not go negative, which is what
+# makes it take a row lock on the write path. Expense and revenue accounts have
+# no floor -- spending is unbounded by definition -- so they never contend.
 DEFAULT_ACCOUNTS = [
-    ("Assets:Checking", "asset", "checking", 0),
-    ("Assets:Savings", "asset", "savings", 0),
-    ("Liabilities:Card", "liability", "card", None),
-    ("Expenses:Groceries", "expense", "groceries", None),
-    ("Expenses:Food and Drink", "expense", "food", None),
-    ("Expenses:Shopping", "expense", "shopping", None),
-    ("Expenses:Transport", "expense", "transport", None),
-    ("Expenses:Entertainment", "expense", "entertainment", None),
-    ("Expenses:Travel", "expense", "travel", None),
-    ("Expenses:Health", "expense", "health", None),
-    ("Expenses:Bills", "expense", "bills", None),
-    ("Expenses:General", "expense", "general", None),
-    ("Expenses:Fees", "expense", "fees", None),
-    ("Revenue:Income", "revenue", "income", None),
+    # --- assets: what you have -------------------------------------------
+    ("Assets:Checking",         "asset",     "checking",      0),
+    ("Assets:Savings",          "asset",     "savings",       0),
+    ("Assets:Investments",      "asset",     "investments",   0),
+    ("Assets:Cash",             "asset",     "cash",          0),
+
+    # --- liabilities: what you owe ---------------------------------------
+    # No floor: a credit card balance is *supposed* to go up when you spend.
+    ("Liabilities:Credit Card", "liability", "card",          None),
+
+    # --- revenue: where money comes from ---------------------------------
+    ("Revenue:Income",          "revenue",   "income",        None),
+    ("Revenue:Interest",        "revenue",   "interest",      None),
+    ("Revenue:Refunds",         "revenue",   "refunds",       None),
+
+    # --- expenses: where it goes -----------------------------------------
+    ("Expenses:Rent",           "expense",   "rent",          None),
+    ("Expenses:Groceries",      "expense",   "groceries",     None),
+    ("Expenses:Food and Drink", "expense",   "food",          None),
+    ("Expenses:Transport",      "expense",   "transport",     None),
+    ("Expenses:Shopping",       "expense",   "shopping",      None),
+    ("Expenses:Entertainment",  "expense",   "entertainment", None),
+    ("Expenses:Subscriptions",  "expense",   "subscriptions", None),
+    ("Expenses:Bills",          "expense",   "bills",         None),
+    ("Expenses:Health",         "expense",   "health",        None),
+    ("Expenses:Travel",         "expense",   "travel",        None),
+    ("Expenses:Education",      "expense",   "education",     None),
+    ("Expenses:General",        "expense",   "general",       None),
+    ("Expenses:Fees",           "expense",   "fees",          None),
 ]
 
 

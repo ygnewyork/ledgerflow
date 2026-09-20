@@ -60,6 +60,14 @@ def transaction(row: dict[str, Any], entries: list[dict[str, Any]] | None = None
         "reverses": row.get("reverses_id"),
         "metadata": row.get("metadata") or {},
     }
+    # present only on list queries, which join the normalized view
+    if "category" in row:
+        # `category` is the ledger's (the expense account it was booked to);
+        # `merchant` is the normalizer's, which may legitimately be absent.
+        out["category"] = row.get("category")
+        out["merchant"] = row.get("merchant_name")
+        out["descriptor"] = row.get("descriptor")
+        out["confidence"] = row.get("confidence")
     if entries is not None:
         out["entries"] = [entry(e) for e in entries]
         out["amount"] = sum(e["amount_minor"] for e in entries if e["direction"] == "debit")

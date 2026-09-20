@@ -53,8 +53,10 @@
   <section class="card col-6" aria-labelledby="category-h">
     <h2 id="category-h">Spend by category</h2>
     <p class="hint">
-      Resolved by the normalizer. Descriptors below the confidence threshold stay
-      in Uncategorized rather than being guessed into a bucket.
+      Click a category to filter the feed. Grouped by the expense account each
+      posting was booked to, so these totals reconcile exactly with the ledger
+      &mdash; not by the normalizer's guess at a merchant, which is allowed to
+      be &ldquo;I don't know.&rdquo;
     </p>
     <svg id="category-chart" class="chart" role="img" aria-label="Spend by category"></svg>
   </section>
@@ -62,6 +64,9 @@
   <section class="card col-6" aria-labelledby="feed-h">
     <h2 id="feed-h">Transaction feed</h2>
     <p class="hint">Newest first. Click a row to open its ledger entries.</p>
+    <button id="feed-filter" class="filter-chip" hidden>
+      <span class="chip-label"></span> &times;
+    </button>
     <div class="scroll" id="feed"></div>
   </section>
 

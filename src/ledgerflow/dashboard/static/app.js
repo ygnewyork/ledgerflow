@@ -17,6 +17,19 @@ const state = {
   entries: [],
   series: [],
   transactions: [],
+  categoryFilter: null,   // set by clicking a bar in Spend by category
+};
+
+// Deposits and transfers carry no merchant descriptor, so the feed names them
+// by what they are. "card_purchase" is a posting rule, not something a person
+// recognizes on their own statement.
+const KIND_LABELS = {
+  deposit: "Deposit",
+  transfer: "Transfer",
+  card_purchase: "Purchase",
+  refund: "Refund",
+  fee: "Fee",
+  "card_purchase.reversal": "Reversal",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -413,49 +426,105 @@ function renderCategories(rows) {
 
   const max = Math.max(...rows.map((r) => r.spend));
   const trackW = Math.max(40, W - labelW - valueW - 12);
+  const selected = state.categoryFilter;
 
   rows.forEach((r, i) => {
     const yTop = i * rowH + 6;
     const w = Math.max(2, (r.spend / max) * trackW);
-    svg.appendChild(el("text", {
+    const isSelected = selected === r.category;
+    // Emphasis, not recoloring: the selected bar keeps the series color and
+    // the others recede. Assigning a different hue per category would burn
+    // the one free channel on information the bar length already carries.
+    const muted = selected && !isSelected;
+
+    const group = el("g", {
+      class: "cat-row" + (isSelected ? " is-selected" : "") + (muted ? " is-muted" : ""),
+      role: "button",
+      tabindex: "0",
+      "aria-pressed": String(isSelected),
+      "aria-label": `Filter the feed to ${r.category}`,
+    });
+
+    // full-width hit target: clicking the label or the empty track counts too
+    group.appendChild(el("rect", {
+      x: 0, y: yTop, width: W, height: rowH - 4, class: "cat-hit",
+    }));
+    group.appendChild(el("text", {
       x: 0, y: yTop + 14, class: "bar-name", "dominant-baseline": "middle",
     }, r.category));
-
-    // 4px rounded data-end, anchored square to the baseline
-    const bar = el("rect", {
+    group.appendChild(el("rect", {
       x: labelW, y: yTop + 3, width: w, height: 16, rx: 4, class: "bar",
-    });
-    bar.addEventListener("pointermove", (evt) => showTip(evt,
-      `<div class="t-title">${r.category}</div>
-       <div class="t-row">${money(r.spend)}</div>
-       <div class="t-row">${r.txn_count} transactions</div>
-       ${r.unresolved ? `<div class="t-row">${r.unresolved} unresolved descriptors</div>` : ""}`));
-    bar.addEventListener("pointerleave", hideTip);
-    svg.appendChild(bar);
-
-    // every bar is direct-labeled: the relief rule, and it reads better than an axis
-    svg.appendChild(el("text", {
+    }));
+    group.appendChild(el("text", {
       x: labelW + w + 8, y: yTop + 14, class: "bar-label", "dominant-baseline": "middle",
     }, money(r.spend)));
+
+    const toggle = () => selectCategory(isSelected ? null : r.category);
+    group.addEventListener("click", toggle);
+    group.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter" || evt.key === " ") { evt.preventDefault(); toggle(); }
+    });
+    group.addEventListener("pointermove", (evt) => showTip(evt,
+      `<div class="t-title">${r.category}</div>
+       <div class="t-row">${money(r.spend)} &middot; ${r.txn_count} transactions</div>
+       ${r.unresolved ? `<div class="t-row">${r.unresolved} unresolved descriptors</div>` : ""}
+       <div class="t-row">${isSelected ? "click to clear filter" : "click to filter the feed"}</div>`));
+    group.addEventListener("pointerleave", hideTip);
+    svg.appendChild(group);
   });
+}
+
+function selectCategory(category) {
+  state.categoryFilter = category;
+  renderCategories(state.categories || []);
+  refreshFeed();
+}
+
+async function refreshFeed() {
+  const chip = $("feed-filter");
+  const category = state.categoryFilter;
+  chip.hidden = !category;
+  if (category) chip.querySelector(".chip-label").textContent = category;
+
+  const query = category ? `&category=${encodeURIComponent(category)}` : "";
+  try {
+    const list = await api(`/v1/transactions?limit=30${query}`);
+    state.transactions = list.data;
+    renderFeed(list.data);
+  } catch (err) {
+    if (err.message !== "unauthorized") console.error(err);
+  }
 }
 
 /* ---------- feed, signals, explorer ---------- */
 
 function renderFeed(transactions) {
   if (!transactions.length) {
-    $("feed").innerHTML = `<p class="empty">No transactions yet.</p>`;
+    $("feed").innerHTML = state.categoryFilter
+      ? `<p class="empty">Nothing in ${state.categoryFilter}.</p>`
+      : `<p class="empty">No transactions yet.</p>`;
     return;
   }
   $("feed").innerHTML = `<table><thead><tr>
-      <th>When</th><th>Kind</th><th class="num">Amount</th><th>Transaction</th>
-    </tr></thead><tbody>${transactions.map((t) => `
-      <tr class="clickable" data-txn="${t.id}">
+      <th>When</th><th>Merchant</th><th>Category</th><th class="num">Amount</th>
+    </tr></thead><tbody>${transactions.map((t) => {
+      const name = t.merchant || KIND_LABELS[t.kind] || t.kind;
+      // an unresolved descriptor is worth seeing: it is what the normalizer
+      // could not place, and the reason the Uncategorized bar exists
+      // show the raw descriptor when the normalizer could not place it -- that
+      // string is exactly what the unresolved count in the breakdown refers to
+      const sub = !t.merchant && t.descriptor
+        ? `<div class="mono sub">${t.descriptor.slice(0, 38)}</div>` : "";
+      return `<tr class="clickable" data-txn="${t.id}">
         <td class="mono">${when(t.effective_at)}</td>
-        <td>${t.kind}${t.status === "reversed" ? ' <span class="status serious">reversed</span>' : ""}</td>
+        <td>${name}${sub}${t.status === "reversed"
+            ? ' <span class="status serious">reversed</span>' : ""}</td>
+        <td>${t.category
+            ? `<span class="chip">${t.category}</span>`
+            : `<span class="chip chip--none">&mdash;</span>`}</td>
         <td class="num">${money(t.amount || 0, t.currency || "usd")}</td>
-        <td class="mono">${t.id.slice(0, 16)}…</td>
-      </tr>`).join("")}</tbody></table>`;
+      </tr>`;
+    }).join("")}</tbody></table>`;
 
   $("feed").querySelectorAll("tr[data-txn]").forEach((row) =>
     row.addEventListener("click", () => showTransaction(row.dataset.txn)));
@@ -523,10 +592,15 @@ async function showTransaction(id) {
 
 async function loadAccounts() {
   const list = await api("/v1/accounts?limit=100");
-  // asset accounts first: a balance chart of Expenses:Groceries is technically
-  // correct and not what anyone opens this page to see
+  // Asset accounts first -- a balance chart of Expenses:Groceries is
+  // technically correct and not what anyone opens this page to see -- then by
+  // balance, so the default is an account with history rather than whichever
+  // one sorts first alphabetically. "Assets:Cash" beating "Assets:Checking" to
+  // the front and rendering an empty chart is not a good first impression.
   state.accounts = list.data.sort((a, b) =>
-    (a.type === "asset" ? 0 : 1) - (b.type === "asset" ? 0 : 1) || a.name.localeCompare(b.name));
+    (a.type === "asset" ? 0 : 1) - (b.type === "asset" ? 0 : 1)
+    || Math.abs(b.balance || 0) - Math.abs(a.balance || 0)
+    || a.name.localeCompare(b.name));
 
   const picker = $("account-picker");
   picker.innerHTML = state.accounts
@@ -546,7 +620,8 @@ async function loadAll() {
     const [health, entries, transactions, signals, categories] = await Promise.all([
       api("/v1/health"),
       api(`/v1/ledger/entries?account=${state.accountId}&limit=500`),
-      api("/v1/transactions?limit=30"),
+      api("/v1/transactions?limit=30" + (state.categoryFilter
+          ? `&category=${encodeURIComponent(state.categoryFilter)}` : "")),
       api("/v1/fraud_signals?limit=25"),
       api("/v1/analytics/spend_by_category?days=180"),
     ]);
@@ -563,9 +638,12 @@ async function loadAll() {
       $("travel").value = 100;
       onTravel();
     }
+    state.transactions = transactions.data;
+    state.categories = categories.data;
     renderFeed(transactions.data);
     renderSignals(signals.data);
     renderCategories(categories.data);
+    $("feed-filter").hidden = !state.categoryFilter;
 
     $("mode-line").textContent =
       `${state.account?.name || ""} · ${state.entries.length} entries`;
@@ -614,6 +692,7 @@ $("travel").addEventListener("input", onTravel);
 ["pointerup", "pointercancel", "blur", "keyup"].forEach((evt) =>
   $("travel").addEventListener(evt, () => { travel.dragging = false; }));
 $("travel-live").addEventListener("click", setLive);
+$("feed-filter").addEventListener("click", () => selectCategory(null));
 $("balance-table-toggle").addEventListener("click", (e) => {
   const table = $("balance-table");
   const shown = !table.hidden;

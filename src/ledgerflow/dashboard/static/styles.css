@@ -247,3 +247,36 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
    being viewed, so it is shaded back rather than hidden -- the shape of what
    comes next is useful context, it just is not part of the answer. */
 .travel-future { fill: var(--surface-1); opacity: 0.72; }
+
+/* Category rows act as filter buttons. */
+.cat-hit { fill: transparent; }
+.cat-row { cursor: pointer; }
+.cat-row:hover .cat-hit { fill: var(--series-1-soft); }
+.cat-row:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+/* Emphasis on selection: unselected rows recede, they do not change hue. */
+.cat-row.is-muted { opacity: 0.4; }
+.cat-row.is-selected .bar-name { font-weight: 600; }
+
+.chip {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--series-1-soft);
+  color: var(--series-1);
+  white-space: nowrap;
+}
+.chip--none { background: transparent; color: var(--text-muted); }
+
+.filter-chip {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--series-1);
+  background: var(--series-1);
+  color: #fff;
+  margin-bottom: 10px;
+}
+.filter-chip:hover { opacity: 0.85; }
+
+.sub { color: var(--text-muted); margin-top: 1px; }
