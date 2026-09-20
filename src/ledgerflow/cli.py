@@ -42,6 +42,12 @@ DEFAULT_ACCOUNTS = [
     # No floor: a credit card balance is *supposed* to go up when you spend.
     ("Liabilities:Credit Card", "liability", "card",          None),
 
+    # --- equity: what the accounts were worth on day one -----------------
+    # Opening balances are not income; they are the starting position. Booking
+    # them to equity is what keeps "revenue" meaning money actually earned
+    # during the period, which is what makes an income statement legible.
+    ("Equity:Opening Balances", "equity",    "opening",       None),
+
     # --- revenue: where money comes from ---------------------------------
     ("Revenue:Income",          "revenue",   "income",        None),
     ("Revenue:Interest",        "revenue",   "interest",      None),

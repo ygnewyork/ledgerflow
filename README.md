@@ -6,7 +6,7 @@ durable event stream, and exposes balances, analytics, and webhooks to
 developers.
 
 **Status: running.** The ledger, API, workers, Spark jobs, and dashboard are
-built and tested — 84 tests against a real PostgreSQL, plus 14 SQL invariant
+built and tested — 93 tests against a real PostgreSQL, plus 14 SQL invariant
 assertions. See [Running it](#running-it) below and
 [`docs/05-roadmap.md`](docs/05-roadmap.md) for what each milestone delivered.
 
@@ -294,7 +294,7 @@ curl -X POST localhost:8000/v1/transactions \
 - `python -m ledgerflow.bench --key lf_test_... --sweep --funding-accounts 32`
   — the load test ([results](docs/06-load-test.md))
 - `http://localhost:8000/docs` — the generated OpenAPI browser, all 22 routes
-- `make test` — 84 tests against the real database
+- `make test` — 93 tests against the real database
 - `python -m ledgerflow.cli reconcile` — recompute every balance from entries
   and diff against the snapshot cache
 
@@ -330,7 +330,7 @@ src/ledgerflow/
   features/             window definitions shared by the online and offline paths
   spark/                streaming + backfill jobs, point-in-time training joins
   dashboard/static/     the operator UI -- vanilla JS, no build step
-tests/                  84 tests + 14 SQL invariant assertions
+tests/                  93 tests + 14 SQL invariant assertions
 ```
 
 The `domain/` package imports nothing from FastAPI, SQLAlchemy, or Kafka, and

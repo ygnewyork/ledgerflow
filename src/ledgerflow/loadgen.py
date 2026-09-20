@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterator
 
@@ -100,9 +100,36 @@ def _descriptor(template: str, rng: random.Random) -> str:
 # ---------------------------------------------------------------------------
 
 
+#: What the accounts were worth on day one. Starting every account at zero is
+#: not a neutral choice -- it means the first paycheck has to cover rent, the
+#: savings transfer and two weeks of groceries before the second one arrives,
+#: which is not how anyone's finances actually work and made the 90-day run
+#: overdraw.
+OPENING = {
+    "checking": 384_000,
+    "savings": 612_000,
+    "investments": 1_140_000,
+    "cash": 8_000,
+}
+
+
 def _timeline(start: datetime, days: int, rng: random.Random) -> list[Event]:
     end = start + timedelta(days=days)
     events: list[Event] = []
+
+    # --- opening balances, booked to equity --------------------------------
+    for account, amount in OPENING.items():
+        if amount <= 0:
+            # An account that opened at zero has no opening entry to record.
+            # The domain rejects a zero-amount entry, correctly -- "nothing
+            # happened" is the absence of a posting, not a posting of nothing.
+            continue
+        events.append(Event(
+            at=start - timedelta(minutes=5),
+            kind="opening_balance",
+            accounts={"destination": account, "equity": "opening"},
+            amount=amount, note="opening balance",
+        ))
 
     # --- income: a paycheck every two weeks, into checking ----------------
     # Slightly variable, the way hourly or bonus-inclusive pay is.
@@ -309,6 +336,82 @@ def _with_card_payoffs(events: list[Event], start: datetime, days: int,
     return out
 
 
+def _fit_to_checking(events: list[Event], rng: random.Random) -> tuple[list[Event], dict[str, int]]:
+    """Replay the timeline against a running checking balance, and adapt.
+
+    The generator builds each habit independently and then sorts, so nothing
+    knows the balance at the moment it spends. Without this pass a lean week
+    produces a posting the ledger correctly rejects, and the whole run dies on
+    an overdraft that is the generator's fault, not the ledger's.
+
+    Rather than inflate the paycheck until the problem disappears, this does
+    what a person does when checking is low:
+
+      * a discretionary transfer (savings, brokerage, ATM) is shrunk to what
+        is actually there, and dropped if that is nothing
+      * a purchase falls back to the credit card
+      * a card payment pays what it can
+
+    Which is also why the card balance grows in exactly the months you would
+    expect it to.
+    """
+    # a cushion, because people do not run their checking account to zero
+    BUFFER = 12_000
+
+    balance = 0
+    out: list[Event] = []
+    adapted = {"transfers_reduced": 0, "transfers_skipped": 0, "moved_to_card": 0}
+
+    for event in events:
+        accounts = event.accounts
+        into_checking = (
+            (event.kind in ("deposit", "opening_balance") and accounts.get("destination") == "checking")
+            or (event.kind == "transfer" and accounts.get("destination") == "checking")
+            or (event.kind == "refund" and accounts.get("funding") == "checking")
+        )
+        if into_checking:
+            balance += event.amount
+            out.append(event)
+            continue
+
+        spends_checking = (
+            accounts.get("source") == "checking"
+            or (event.kind == "card_purchase" and accounts.get("funding") == "checking")
+        )
+        if not spends_checking:
+            out.append(event)
+            continue
+
+        available = balance - BUFFER
+
+        if event.amount <= available:
+            balance -= event.amount
+            out.append(event)
+            continue
+
+        if event.kind == "transfer":
+            # shrink it to what is there, in round hundreds
+            trimmed = max(0, (available // 10_000) * 10_000)
+            if trimmed <= 0:
+                adapted["transfers_skipped"] += 1
+                continue
+            balance -= trimmed
+            adapted["transfers_reduced"] += 1
+            out.append(replace(event, amount=trimmed))
+            continue
+
+        # rent cannot move to a credit card; everything else can
+        if accounts.get("expense") == "rent":
+            balance -= event.amount
+            out.append(event)
+            continue
+
+        adapted["moved_to_card"] += 1
+        out.append(replace(event, accounts={**accounts, "funding": "card"}))
+
+    return out, adapted
+
+
 def generate(
     *, tenant_id: str, count: int = 1000, days: int = 90, seed: int = 17, mode: str = "test"
 ) -> dict[str, int]:
@@ -323,6 +426,7 @@ def generate(
     start = now - timedelta(days=days)
 
     events = _with_card_payoffs(_timeline(start, days, rng), start, days, rng)
+    events, adapted = _fit_to_checking(events, rng)
     events = [e for e in events if e.at <= now][:count]
 
     tally: dict[str, int] = {}
@@ -345,6 +449,7 @@ def generate(
     result = {
         "transactions": len(events),
         **tally,
+        **{k: v for k, v in adapted.items() if v},
         "seconds": round(elapsed, 2),
         "per_second": round(len(events) / elapsed) if elapsed else 0,
     }

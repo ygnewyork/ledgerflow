@@ -135,6 +135,16 @@ class Deposit(PostingRule):
 
 
 @posting_rule
+class OpeningBalance(PostingRule):
+    kind = "opening_balance"
+    description = "What an account was worth when the books were opened."
+    shape = ("destination", "equity")
+
+    def build(self, request: PostingRequest) -> tuple[Entry, ...]:
+        return _simple("destination", "equity", request)
+
+
+@posting_rule
 class Transfer(PostingRule):
     kind = "transfer"
     description = "Money moves between two accounts under the same tenant."

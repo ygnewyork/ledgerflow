@@ -8,6 +8,7 @@ from ledgerflow import ids
 from ledgerflow.adapters.db import read_only, unit_of_work
 from ledgerflow.stream import LEDGER_EVENTS, get_stream
 from ledgerflow.workers import drain_all
+from ledgerflow.workers import outbox_relay
 from ledgerflow.workers.outbox_relay import relay_once
 from ledgerflow.workers.runner import Consumer, PoisonMessage, process_one, run
 
@@ -42,12 +43,27 @@ def test_the_event_is_written_with_the_ledger_not_after_it(funded, client):
 
 
 def test_relay_publishes_then_marks_sent(funded, client):
-    _purchase(client)
-    published = relay_once()
+    txn_id = _purchase(client).json()["id"]
+
+    # Drain, rather than publishing a single batch. relay_once() takes the
+    # OLDEST 500 unpublished rows, so with any backlog ahead of it this
+    # tenant's event simply is not in the first batch -- which is correct
+    # relay behaviour and a broken assumption for a test to hold.
+    published = outbox_relay.run(once=True)
     assert published >= 1
 
+    # Scoped to this tenant's event, not the global outbox. outbox_lag() spans
+    # every tenant, so asserting it reaches zero makes this test depend on no
+    # other test having written anything -- which is a property a test suite
+    # should never be asked to have.
     with read_only() as uow:
-        assert uow.events.outbox_lag()["pending"] == 0
+        mine = [
+            e for e in uow.events.list(
+                tenant_id=funded["tenant_id"], mode="test", limit=100)
+            if e["payload"]["data"]["object"]["id"] == txn_id
+        ]
+    assert mine, "the transaction produced no event"
+    assert all(e["published_at"] is not None for e in mine), "the relay left it unpublished"
 
 
 def test_redelivery_is_absorbed_by_the_dedupe_claim(funded, client):
