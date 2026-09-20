@@ -20,9 +20,37 @@ const state = {
   categoryFilter: null,   // set by clicking a bar in Spend by category
   balanceSeries: [],      // asset & liability accounts over time
   spendSeries: [],        // cumulative spend per category
-  windowDays: 180,
+  view: "accounts",       // accounts | spending | card
   charts: {},             // chart geometry, so the marker can be placed cheaply
   connection: null,
+  cardSeries: [],
+  range: { start: null, end: null, granularity: "auto" },
+};
+
+const DAY = 86400;
+
+const VIEWS = {
+  accounts: {
+    title: "Accounts over time",
+    hint: "What you have and what you owe. Assets above the line, the credit " +
+          "card below it \u2014 debt plotted as a positive number sits in the " +
+          "same space as savings and reads like money you have.",
+    travel: true,
+  },
+  spending: {
+    title: "Spending over time",
+    hint: "Cumulative within the window, by the expense account each posting " +
+          "was booked to. Rising lines are money leaving \u2014 a different " +
+          "question from the balances, so a different axis.",
+    travel: false,
+  },
+  card: {
+    title: "Credit card cycle",
+    hint: "What is outstanding on the card. It climbs as you spend and drops " +
+          "when checking pays it off on the 15th \u2014 the sawtooth IS the " +
+          "statement cycle. Shown as what you owe, so up means more debt.",
+    travel: true,
+  },
 };
 
 // Deposits and transfers carry no merchant descriptor, so the feed names them
@@ -284,6 +312,43 @@ function drawLines(svgId, series, opts = {}) {
   }
 }
 
+/* ---------- the window ---------- */
+/* A start and an end, not "last N days". A fixed period is what you need to
+ * compare two runs or point someone at a month; the quick buttons just set
+ * both ends for you. */
+
+const isoDay = (seconds) => new Date(seconds * 1000).toISOString().slice(0, 10);
+
+function currentRange() {
+  const end = state.range.end ?? Math.floor(Date.now() / 1000);
+  const start = state.range.start ?? end - 180 * DAY;
+  return { start, end };
+}
+
+/* Granularity -> how many buckets the server should cut the window into.
+ * "auto" keeps a readable number of points regardless of span; a fixed
+ * cadence answers "show me every day" literally, and is clamped because a
+ * decade of daily points is 3,650 values nobody can read and the server
+ * should not build. */
+function currentPoints() {
+  const { start, end } = currentRange();
+  const spanDays = Math.max(1, Math.round((end - start) / DAY));
+  const g = state.range.granularity;
+  if (g === "auto") return Math.min(240, Math.max(20, Math.round(spanDays / 3)));
+  return Math.min(800, Math.max(2, Math.round(spanDays / Number(g))));
+}
+
+function rangeQuery() {
+  const { start, end } = currentRange();
+  return `start=${start}&end=${end}&points=${currentPoints()}`;
+}
+
+function syncRangeInputs() {
+  const { start, end } = currentRange();
+  $("range-start").value = isoDay(start);
+  $("range-end").value = isoDay(end);
+}
+
 /* ---------- time travel ---------- */
 /* One panel, not two. "Accounts over time" and the old single-account balance
  * chart asked the same question with different amounts of data, so the slider
@@ -304,14 +369,14 @@ function setLive() {
 }
 
 function travelInstant() {
-  const chart = state.charts["accounts-chart"];
+  const chart = state.charts["main-chart"];
   if (!chart) return null;
   const pct = Number($("travel").value) / 100;
   return Math.round(chart.t0 + (chart.t1 - chart.t0) * pct);
 }
 
 function onTravel() {
-  const chart = state.charts["accounts-chart"];
+  const chart = state.charts["main-chart"];
   if (!chart) {
     $("travel-readout").textContent = "no history yet";
     return;
@@ -327,7 +392,7 @@ function onTravel() {
 
 /* Marks where the slider sits, and shades what had not happened yet. */
 function drawTravelMarker() {
-  const chart = state.charts["accounts-chart"];
+  const chart = state.charts["main-chart"];
   if (!chart) return;
   chart.layer.replaceChildren();
   if (!travel.pinned) return;
@@ -436,20 +501,56 @@ async function refreshFeed() {
 
 /* ---------- what you have, and what you owe ---------- */
 
-function renderAccounts(series) {
-  state.balanceSeries = series;
-  drawLines("accounts-chart", series.map((s) => ({
+function seriesForView() {
+  if (state.view === "spending") {
+    return state.spendSeries.map((s) => ({
+      label: s.category,
+      points: s.points.map((p) => ({ at: p.at, value: p.spend })),
+    }));
+  }
+  if (state.view === "card") {
+    return state.cardSeries.map((s) => ({
+      label: "Owed",
+      // A card view answers "how much do I owe", so up is more debt. The
+      // accounts view negates the same numbers, because there the question is
+      // net position and debt belongs below the line.
+      points: s.points.map((p) => ({ at: p.at, value: p.balance })),
+    }));
+  }
+  return state.balanceSeries.map((s) => ({
     label: s.name.split(":")[1] || s.name,
-    // A liability plotted as a positive number sits in the same space as an
-    // asset and reads as money you have. Negating it puts debt below the zero
-    // line, where a glance can tell the two apart.
     points: s.points.map((p) => ({
       at: p.at, value: s.type === "liability" ? -p.balance : p.balance,
     })),
-  })), { valueKey: "value", legendId: "accounts-legend", height: 250,
-         empty: "no account history yet", redrawMarker: true });
+  }));
+}
 
-  renderPosition(travel.pinned ? travelInstant() : null);
+function renderChart() {
+  const view = VIEWS[state.view];
+  $("chart-h").textContent = view.title;
+  $("chart-hint").textContent = view.hint;
+  $("travel-controls").hidden = !view.travel;
+
+  document.querySelectorAll(".tab").forEach((tab) => {
+    const on = tab.dataset.view === state.view;
+    tab.classList.toggle("is-active", on);
+    tab.setAttribute("aria-selected", String(on));
+  });
+
+  drawLines("main-chart", seriesForView(), {
+    valueKey: "value", legendId: "chart-legend", height: 260,
+    empty: state.view === "card" ? "no card activity in this window"
+                                 : "nothing in this window",
+    redrawMarker: view.travel,
+  });
+
+  if (view.travel) onTravel();
+  else $("travel-live").hidden = true;
+}
+
+function setView(view) {
+  state.view = view;
+  renderChart();
 }
 
 /* Assets, debts and net worth -- at "now", or at the slider's instant. */
@@ -493,15 +594,6 @@ function renderPosition(at) {
       <div class="value">${tile.value}</div>
       <div class="note"><span class="status ${tile.status}">${tile.word}</span> &middot; ${tile.note}</div>
     </div>`).join("");
-}
-
-function renderSpending(series) {
-  state.spendSeries = series;
-  drawLines("spending-chart", series.map((s) => ({
-    label: s.category,
-    points: s.points.map((p) => ({ at: p.at, value: p.spend })),
-  })), { valueKey: "value", legendId: "spending-legend", height: 250,
-         empty: "no spending in this window" });
 }
 
 /* ---------- feed, signals, explorer ---------- */
@@ -625,46 +717,66 @@ async function loadAccounts() {
 }
 
 async function loadAll() {
-  if (!state.key) return;
   try {
     if (!state.accounts.length) await loadAccounts();
     state.account = state.accounts.find((a) => a.id === state.accountId);
 
-    const [health, connection, transactions, signals, categories, balances, spending] =
-      await Promise.all([
+    // The card tab only exists when a liability account is selected: a view
+    // of a statement cycle is meaningless for a savings account, and an
+    // always-present tab that is sometimes empty is worse than no tab.
+    const isCard = state.account?.type === "liability";
+    const cardTab = document.querySelector('.tab[data-view="card"]');
+    cardTab.hidden = !isCard;
+    if (!isCard && state.view === "card") state.view = "accounts";
+
+    const range = rangeQuery();
+    const requests = [
       api("/v1/health"),
       api("/v1/me"),
       api(feedQuery()),
       api("/v1/fraud_signals?limit=25"),
-      api(`/v1/analytics/spend_by_category?days=${state.windowDays}`),
-      api(`/v1/analytics/balance_history?days=${state.windowDays}&points=60`),
-      api(`/v1/analytics/spending_history?days=${state.windowDays}&points=60&top=5`),
-    ]);
+      api(`/v1/analytics/spend_by_category?days=${windowDays()}`),
+      api(`/v1/analytics/balance_history?${range}`),
+      api(`/v1/analytics/spending_history?${range}&top=5`),
+      isCard ? api(`/v1/analytics/balance_history?${range}&account=${state.accountId}`)
+             : Promise.resolve({ data: [] }),
+    ];
+    const [health, connection, transactions, signals, categories, balances,
+           spending, card] = await Promise.all(requests);
 
     renderHealth(health);
     renderConnection(connection);
     state.transactions = transactions.data;
     state.categories = categories.data;
+    state.balanceSeries = balances.data;
+    state.spendSeries = spending.data;
+    state.cardSeries = card.data;
+
     renderFeed(transactions.data);
     renderSignals(signals.data);
     renderCategories(categories.data);
-    renderAccounts(balances.data);
-    renderSpending(spending.data);
+
     // only re-pin to "now" when the reader has not scrubbed and is not
     // mid-drag; otherwise a background refresh yanks the handle out of
-    // their hand every five seconds
+    // their hand every few seconds
     if (!travel.pinned && !travel.dragging) {
       $("travel").value = 100;
       $("travel-live").hidden = true;
     }
-    onTravel();
-    $("feed-filter").hidden = !state.categoryFilter;
+    renderChart();
+    renderPosition(travel.pinned ? travelInstant() : null);
+    syncRangeInputs();
 
     $("mode-line").textContent =
-      `${connection.tenant_name} · feed scoped to ${state.account?.name || "all accounts"}`;
+      `${connection.tenant_name} \u00b7 feed scoped to ${state.account?.name || "all accounts"}`;
   } catch (err) {
     if (err.message !== "unauthorized") console.error(err);
   }
+}
+
+function windowDays() {
+  const { start, end } = currentRange();
+  return Math.max(1, Math.round((end - start) / DAY));
 }
 
 function renderConnection(conn) {
@@ -720,8 +832,37 @@ $("account-picker").addEventListener("change", (e) => {
   loadAll();
 });
 
-$("window-picker").addEventListener("change", (e) => {
-  state.windowDays = Number(e.target.value);
+document.querySelectorAll(".tab").forEach((tab) =>
+  tab.addEventListener("click", () => setView(tab.dataset.view)));
+
+function setRange(startSeconds, endSeconds) {
+  state.range.start = startSeconds;
+  state.range.end = endSeconds;
+  syncRangeInputs();
+  loadAll();
+}
+
+document.querySelectorAll(".quick button").forEach((b) =>
+  b.addEventListener("click", () => {
+    const end = Math.floor(Date.now() / 1000);
+    setRange(end - Number(b.dataset.days) * DAY, end);
+  }));
+
+["range-start", "range-end"].forEach((id) =>
+  $(id).addEventListener("change", () => {
+    const start = Math.floor(new Date($("range-start").value + "T00:00:00Z").getTime() / 1000);
+    const end = Math.floor(new Date($("range-end").value + "T23:59:59Z").getTime() / 1000);
+    // a backwards range is a slip, not a request; snap it rather than sending
+    // the server something it will reject
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+      syncRangeInputs();
+      return;
+    }
+    setRange(start, end);
+  }));
+
+$("granularity").addEventListener("change", (e) => {
+  state.range.granularity = e.target.value;
   loadAll();
 });
 $("travel").addEventListener("input", onTravel);
@@ -737,10 +878,7 @@ $("feed-filter").addEventListener("click", () => selectCategory(null));
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    renderAccounts(state.balanceSeries);
-    renderSpending(state.spendSeries);
-  }, 150);
+  resizeTimer = setTimeout(renderChart, 150);
 });
 
 (function init() {

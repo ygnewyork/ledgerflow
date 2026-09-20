@@ -66,6 +66,11 @@
 
 * { box-sizing: border-box; }
 
+/* `display: flex` on a component beats the browser's default [hidden] rule,
+   so el.hidden = true silently does nothing. Anything toggled by the hidden
+   attribute needs this, and finding out by screenshot is the slow way. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--plane);
@@ -326,3 +331,23 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
 .conn-key { font-family: var(--mono); color: var(--text-primary); }
 .conn-meta { color: var(--text-muted); }
 @media (max-width: 760px) { .conn-meta { display: none; } }
+
+/* One chart, three views. Tabs rather than three panels: they answer
+   questions about the same window, and stacking them made the page a scroll. */
+.panel-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.panel-head h2 { margin-bottom: 4px; }
+.tabs { display: inline-flex; gap: 2px; margin-left: auto; padding: 2px;
+        background: var(--plane); border: 1px solid var(--border); border-radius: 999px; }
+.tab {
+  border: none; background: none; color: var(--text-secondary);
+  font-size: 12px; padding: 4px 12px; border-radius: 999px;
+}
+.tab:hover { color: var(--text-primary); }
+.tab.is-active { background: var(--series-1); color: #fff; }
+
+.controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 0 0 12px; }
+.ctl { display: inline-flex; align-items: center; gap: 6px;
+       font-size: 12px; color: var(--text-secondary); }
+.ctl input, .ctl select { padding: 4px 8px; font-size: 12px; }
+.quick { display: inline-flex; gap: 2px; margin-left: auto; }
+.quick button { font-size: 12px; padding: 4px 10px; border-radius: 6px; }

@@ -230,23 +230,37 @@ class AccountRepository(_Repo):
         )
 
     def balance_history(
-        self, tenant_id: str, mode: str, *, days: int = 180, points: int = 60,
+        self, tenant_id: str, mode: str, *,
+        start: datetime, end: datetime, points: int = 60,
         types: Sequence[str] = ("asset", "liability"),
+        account_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Each account's balance at a series of instants.
 
         Cumulative to each bucket, not per-bucket: a balance is a stock, not a
-        flow. Bucketing the flow and summing it client-side would give the same
-        curve only if the window started at the account's first entry, which it
-        does not.
+        flow. Bucketing the flow and summing it client-side would match only if
+        the window began at the account's first entry, which it does not.
+
+        The window is an explicit start and end rather than "last N days" so a
+        caller can ask about a fixed past period without the answer moving
+        under them as the clock advances.
         """
+        clauses = ["a.tenant_id = %(tenant)s", "a.mode = %(mode)s", "a.type = ANY(%(types)s)"]
+        params: dict[str, Any] = {
+            "tenant": tenant_id, "mode": mode, "start": start, "end": end,
+            "points": max(2, points), "types": list(types),
+        }
+        if account_id:
+            clauses.append("a.id = %(account)s")
+            params["account"] = account_id
+
         return self._all(
-            """
+            f"""
             WITH bucket AS (
                 SELECT generate_series(
-                    now() - make_interval(days => %(days)s),
-                    now(),
-                    make_interval(secs => %(days)s * 86400.0 / %(points)s)
+                    %(start)s::timestamptz, %(end)s::timestamptz,
+                    make_interval(secs => GREATEST(1, EXTRACT(EPOCH FROM
+                        %(end)s::timestamptz - %(start)s::timestamptz) / %(points)s))
                 ) AS at
             )
             SELECT a.id, a.name, a.type, b.at,
@@ -257,13 +271,11 @@ class AccountRepository(_Repo):
              CROSS JOIN bucket b
               LEFT JOIN entries e
                      ON e.account_id = a.id AND e.effective_at <= b.at
-             WHERE a.tenant_id = %(tenant)s AND a.mode = %(mode)s
-               AND a.type = ANY(%(types)s)
+             WHERE {' AND '.join(clauses)}
              GROUP BY a.id, a.name, a.type, b.at
              ORDER BY a.name, b.at
             """,
-            {"tenant": tenant_id, "mode": mode, "days": days,
-             "points": points, "types": list(types)},
+            params,
         )
 
     def reconcile(self) -> list[dict[str, Any]]:
@@ -927,21 +939,22 @@ class NormalizationRepository(_Repo):
         )
 
     def spending_history(
-        self, tenant_id: str, mode: str, *, days: int = 180, points: int = 60
+        self, tenant_id: str, mode: str, *,
+        start: datetime, end: datetime, points: int = 60,
     ) -> list[dict[str, Any]]:
         """Cumulative spend per category, within the window.
 
         Bounded to the window on purpose. An expense account never decreases,
-        so a to-date cumulative would start each series at whatever the account
-        had already accumulated and flatten the part being asked about.
+        so a to-date cumulative would start each series at whatever had already
+        accumulated and flatten the part being asked about.
         """
         return self._all(
             """
             WITH bucket AS (
                 SELECT generate_series(
-                    now() - make_interval(days => %(days)s),
-                    now(),
-                    make_interval(secs => %(days)s * 86400.0 / %(points)s)
+                    %(start)s::timestamptz, %(end)s::timestamptz,
+                    make_interval(secs => GREATEST(1, EXTRACT(EPOCH FROM
+                        %(end)s::timestamptz - %(start)s::timestamptz) / %(points)s))
                 ) AS at
             )
             SELECT split_part(a.name, ':', 2) AS category, b.at,
@@ -953,13 +966,14 @@ class NormalizationRepository(_Repo):
               LEFT JOIN entries e
                      ON e.account_id = a.id
                     AND e.effective_at <= b.at
-                    AND e.effective_at > now() - make_interval(days => %(days)s)
+                    AND e.effective_at > %(start)s::timestamptz
              WHERE a.tenant_id = %(tenant)s AND a.mode = %(mode)s AND a.type = 'expense'
                AND a.name <> 'Expenses:Investment Losses'
              GROUP BY 1, b.at
              ORDER BY 1, b.at
             """,
-            {"tenant": tenant_id, "mode": mode, "days": days, "points": points},
+            {"tenant": tenant_id, "mode": mode, "start": start, "end": end,
+             "points": max(2, points)},
         )
 
     def version_diff(self, left: int, right: int) -> list[dict[str, Any]]:

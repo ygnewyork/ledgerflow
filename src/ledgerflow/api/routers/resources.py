@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
@@ -9,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from ... import ids
 from ...adapters.db import read_only
 from ...application import serializers, services
-from ...application.errors import NotFound
+from ...application.errors import LedgerFlowError, NotFound
 from ...application.services import TenantContext
 from ...domain.money import Money, MoneyError
 from ...stream import LEDGER_EVENTS, get_stream
@@ -488,16 +489,39 @@ def spend_by_category(
     ])
 
 
+def _window(
+    days: int, start: str | None, end: str | None
+) -> tuple[datetime, datetime]:
+    """Resolve a window from either a duration or explicit endpoints.
+
+    `days` is the convenient form and `start`/`end` the precise one. Offering
+    both is deliberate: a dashboard wants "last 90 days", and anyone comparing
+    two runs wants a fixed period whose answer does not drift as the clock
+    moves.
+    """
+    finish = parse_timestamp(end) or datetime.now(timezone.utc)
+    begin = parse_timestamp(start) or finish - timedelta(days=days)
+    if begin >= finish:
+        raise LedgerFlowError("start must be before end", param="start")
+    return begin, finish
+
+
 @router.get("/analytics/balance_history")
 def balance_history(
     ctx: TenantContext = Depends(context),
-    days: int = Query(180, ge=1, le=1095),
-    points: int = Query(60, ge=2, le=365),
+    days: int = Query(180, ge=1, le=3650),
+    start: str | None = Query(None, description="window start; overrides days"),
+    end: str | None = Query(None, description="window end; defaults to now"),
+    points: int = Query(60, ge=2, le=800),
+    account: str | None = Query(None, description="limit to one account"),
 ) -> dict[str, Any]:
     """What you have, over time: every asset and liability account."""
+    begin, finish = _window(days, start, end)
     with read_only() as uow:
+        account_id = services.resolve_account(uow, ctx, account)["id"] if account else None
         rows = uow.accounts.balance_history(
-            ctx.tenant_id, ctx.mode, days=days, points=points
+            ctx.tenant_id, ctx.mode, start=begin, end=finish,
+            points=points, account_id=account_id,
         )
 
     series: dict[str, dict[str, Any]] = {}
@@ -510,28 +534,34 @@ def balance_history(
             "at": int(row["at"].timestamp()), "balance": int(row["balance_minor"]),
         })
 
-    # an account that never moved is noise on a chart, not information
+    # an account that never moved is noise on a chart, not information --
+    # unless it is the only one asked for, where "flat" is the answer
     live = [s for s in series.values() if any(p["balance"] for p in s["points"])]
+    if not live and account_id:
+        live = list(series.values())
     return serializers.listing(sorted(live, key=lambda s: s["name"]))
 
 
 @router.get("/analytics/spending_history")
 def spending_history(
     ctx: TenantContext = Depends(context),
-    days: int = Query(180, ge=1, le=1095),
-    points: int = Query(60, ge=2, le=365),
+    days: int = Query(180, ge=1, le=3650),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+    points: int = Query(60, ge=2, le=800),
     top: int = Query(5, ge=1, le=8),
 ) -> dict[str, Any]:
     """What you spent, over time: cumulative by category.
 
     Everything past the top N folds into "Other". Past roughly seven colour
-    classes adjacent categories stop being distinguishable, so a chart with
-    eleven series is a chart nobody can read -- the tail belongs in one bucket
-    or in the table, not in a ninth hue.
+    classes adjacent categories stop being distinguishable, so an eleven-series
+    chart is one nobody can read -- the tail belongs in one bucket or in the
+    table, never in a ninth hue.
     """
+    begin, finish = _window(days, start, end)
     with read_only() as uow:
         rows = uow.normalization.spending_history(
-            ctx.tenant_id, ctx.mode, days=days, points=points
+            ctx.tenant_id, ctx.mode, start=begin, end=finish, points=points
         )
 
     series: dict[str, list[dict[str, int]]] = {}
@@ -543,14 +573,13 @@ def spending_history(
     ranked = sorted(series.items(), key=lambda kv: kv[1][-1]["spend"] if kv[1] else 0,
                     reverse=True)
     head, tail = ranked[:top], ranked[top:]
-
-    out = [{"object": "spend_series", "category": name, "points": points_}
-           for name, points_ in head if points_ and points_[-1]["spend"] > 0]
+    out = [{"object": "spend_series", "category": name, "points": pts}
+           for name, pts in head if pts and pts[-1]["spend"] > 0]
 
     if tail:
         merged: dict[int, int] = {}
-        for _, points_ in tail:
-            for point in points_:
+        for _, pts in tail:
+            for point in pts:
                 merged[point["at"]] = merged.get(point["at"], 0) + point["spend"]
         if any(merged.values()):
             out.append({

@@ -340,44 +340,67 @@ def _timeline(start: datetime, days: int, rng: random.Random) -> list[Event]:
 
 def _with_card_payoffs(events: list[Event], start: datetime, days: int,
                        rng: random.Random) -> list[Event]:
-    """Pay the card down on the 15th, by what was actually charged to it.
+    """Pay the card down on the 15th, by what is actually outstanding.
 
-    Computed from the events themselves rather than a fixed number, so the
-    payment tracks real spending -- and so a month with a big travel charge
-    produces a visibly bigger payment, which is the behaviour you want the
-    dashboard to show.
+    The earlier version summed the trailing thirty days of charges, which is
+    not the same number as the balance -- spending continues after the
+    statement closes, so the payment never quite cleared it and the card drifted
+    permanently upward. Nobody's card does that, and the sawtooth a statement
+    cycle should draw was missing from the chart.
+
+    This walks the timeline in order carrying the real balance, so a payment
+    clears exactly what is owed at that moment. Most months pay in full; the
+    occasional partial payment is what leaves a carried balance worth looking
+    at.
     """
     end = start + timedelta(days=days)
-    out = list(events)
 
+    due_dates: list[datetime] = []
     month = start.replace(day=1)
     while month < end:
         due = month.replace(day=15, hour=8, minute=0)
-        window_start = due - timedelta(days=30)
         if start <= due < end:
-            charged = sum(
-                e.amount for e in events
-                if window_start <= e.at < due
-                and e.accounts.get("funding") == "card"
-                and e.kind == "card_purchase"
-            )
-            refunded = sum(
-                e.amount for e in events
-                if window_start <= e.at < due
-                and e.accounts.get("funding") == "card"
-                and e.kind == "refund"
-            )
-            owed = charged - refunded
-            if owed > 0:
-                # Most months paid in full; occasionally a partial payment,
-                # which is what leaves a carried balance to look at.
-                paid = owed if rng.random() < 0.8 else int(owed * rng.uniform(0.45, 0.8))
-                out.append(Event(
-                    at=due, kind="transfer",
-                    accounts={"source": "checking", "destination": "card"},
-                    amount=paid, note="credit card payment",
-                ))
+            due_dates.append(due)
         month = (month + timedelta(days=32)).replace(day=1)
+
+    def pay(at: datetime, owed: int) -> Event:
+        amount = owed if rng.random() < 0.78 else int(owed * rng.uniform(0.45, 0.8))
+        return Event(
+            at=at, kind="transfer",
+            accounts={"source": "checking", "destination": "card"},
+            amount=max(1, amount), note="credit card payment",
+        )
+
+    out: list[Event] = []
+    balance = 0
+    next_due = 0
+
+    for event in sorted(events, key=lambda e: e.at):
+        while next_due < len(due_dates) and due_dates[next_due] <= event.at:
+            when = due_dates[next_due]
+            next_due += 1
+            if balance > 0:
+                payment = pay(when, balance)
+                out.append(payment)
+                balance -= payment.amount
+
+        out.append(event)
+        if event.accounts.get("funding") == "card":
+            if event.kind == "card_purchase":
+                balance += event.amount
+            elif event.kind == "refund":
+                balance -= event.amount
+        elif event.kind == "transfer" and event.accounts.get("destination") == "card":
+            balance -= event.amount
+
+    # any statement date after the last posting still comes due
+    while next_due < len(due_dates):
+        when = due_dates[next_due]
+        next_due += 1
+        if balance > 0:
+            payment = pay(when, balance)
+            out.append(payment)
+            balance -= payment.amount
 
     out.sort(key=lambda e: e.at)
     return out

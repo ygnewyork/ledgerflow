@@ -14,12 +14,6 @@
   <span class="spacer"></span>
   <button id="connection" class="conn" title="Which books this key reads. Click to change key."></button>
   <select id="account-picker" aria-label="Account"></select>
-  <select id="window-picker" aria-label="Time window">
-    <option value="30">30 days</option>
-    <option value="90">90 days</option>
-    <option value="180" selected>180 days</option>
-    <option value="365">1 year</option>
-  </select>
   <button id="theme-toggle" title="Toggle theme">◐</button>
   <button id="refresh">Refresh</button>
 </header>
@@ -35,17 +29,43 @@
     <div class="tiles" id="health-tiles"></div>
   </section>
 
-  <section class="card col-8" aria-labelledby="accounts-h">
-    <h2 id="accounts-h">Accounts over time</h2>
-    <p class="hint">
-      What you have and what you owe. Assets above the line, the credit card
-      below it &mdash; debt plotted as a positive number sits in the same space
-      as savings and reads like money you have.
-    </p>
-    <div class="legend" id="accounts-legend"></div>
-    <svg id="accounts-chart" class="chart" role="img"
-         aria-label="Account balances over time"></svg>
-    <div class="travel">
+  <section class="card col-8" aria-labelledby="chart-h">
+    <div class="panel-head">
+      <h2 id="chart-h">Over time</h2>
+      <div class="tabs" role="tablist" aria-label="Chart view">
+        <button class="tab is-active" data-view="accounts" role="tab"
+                aria-selected="true">Accounts</button>
+        <button class="tab" data-view="spending" role="tab"
+                aria-selected="false">Spending</button>
+        <button class="tab" data-view="card" role="tab" aria-selected="false"
+                hidden>Credit card</button>
+      </div>
+    </div>
+    <p class="hint" id="chart-hint"></p>
+
+    <div class="controls">
+      <label class="ctl">From <input type="date" id="range-start"></label>
+      <label class="ctl">To <input type="date" id="range-end"></label>
+      <label class="ctl">Every
+        <select id="granularity">
+          <option value="auto" selected>auto</option>
+          <option value="1">day</option>
+          <option value="7">week</option>
+          <option value="30">month</option>
+        </select>
+      </label>
+      <span class="quick" role="group" aria-label="Quick ranges">
+        <button data-days="30">30d</button>
+        <button data-days="90">90d</button>
+        <button data-days="180">6m</button>
+        <button data-days="365">1y</button>
+      </span>
+    </div>
+
+    <div class="legend" id="chart-legend"></div>
+    <svg id="main-chart" class="chart" role="img" aria-label="Time series"></svg>
+
+    <div class="travel" id="travel-controls">
       <input type="range" id="travel" min="0" max="100" value="100"
              aria-label="Rewind to a point in history">
       <span class="readout" id="travel-readout">&mdash;</span>
@@ -59,19 +79,8 @@
     <div class="tiles tiles--stack" id="networth-tiles"></div>
   </section>
 
-  <section class="card col-6" aria-labelledby="spending-h">
-    <h2 id="spending-h">Spending over time</h2>
-    <p class="hint">
-      Cumulative within the window, by expense account. Rising lines are money
-      leaving &mdash; a different question from the chart above, so a different
-      axis and a different panel.
-    </p>
-    <div class="legend" id="spending-legend"></div>
-    <svg id="spending-chart" class="chart" role="img"
-         aria-label="Cumulative spending by category"></svg>
-  </section>
 
-  <section class="card col-6" aria-labelledby="category-h">
+  <section class="card col-8" aria-labelledby="category-h">
     <h2 id="category-h">Spend by category</h2>
     <p class="hint">
       Click a category to filter the feed. Grouped by the expense account each
