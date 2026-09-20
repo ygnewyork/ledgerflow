@@ -272,27 +272,66 @@ function renderBalanceTable() {
 /* ---------- time travel ---------- */
 /* The slider does not read the chart. It asks the API for the balance as of
  * that instant, which recomputes it from entries -- so what you see is the
- * ledger's own answer, not a client-side approximation of it. */
+ * ledger's own answer, not a client-side approximation of it.
+ *
+ * The state below exists because this panel and the 5-second auto-refresh want
+ * opposite things. A refresh rebuilds the series and would naturally snap the
+ * handle back to "now"; a reader who dragged it to August wants it left alone.
+ * So a refresh only re-pins the handle while the view is still live.
+ */
+
+const travel = {
+  pinned: false,    // the reader has scrubbed away from "now"
+  dragging: false,  // a drag is in progress; never touch the handle mid-gesture
+  seq: 0,           // guards against a slow response overwriting a newer one
+};
 
 let travelTimer = null;
+
+function setLive() {
+  travel.pinned = false;
+  $("travel").value = 100;
+  $("travel-live").hidden = true;
+  onTravel();
+}
+
 function onTravel() {
   const series = state.series;
-  if (series.length < 2) return;
-  const pct = Number($("travel").value) / 100;
+  const slider = $("travel");
+  if (series.length < 2) {
+    $("travel-readout").textContent = "not enough history";
+    return;
+  }
+
+  const pct = Number(slider.value) / 100;
+  travel.pinned = pct < 1;
+  $("travel-live").hidden = !travel.pinned;
+
   const t0 = series[0].t;
   const t1 = series[series.length - 1].t;
   const at = Math.round(t0 + (t1 - t0) * pct);
+  const label = travel.pinned ? when(at) : `${when(at)} (now)`;
 
-  $("travel-readout").textContent = `${when(at)} · …`;
+  // Keep the previous number on screen while the new one is in flight. Blanking
+  // it to an ellipsis on every input event makes a drag look like it is failing.
+  const readout = $("travel-readout");
+  readout.dataset.at = label;
+  readout.classList.add("loading");
+
+  const seq = ++travel.seq;
   clearTimeout(travelTimer);
   travelTimer = setTimeout(async () => {
     try {
       const b = await api(
         `/v1/accounts/${state.accountId}/balance?as_of=${new Date(at * 1000).toISOString()}`
       );
-      $("travel-readout").textContent = `${when(at)} · ${money(b.balance, b.currency)}`;
+      if (seq !== travel.seq) return;   // a newer scrub already superseded this
+      readout.textContent = `${label} · ${money(b.balance, b.currency)}`;
     } catch (err) {
-      $("travel-readout").textContent = `${when(at)} · ${err.message}`;
+      if (seq !== travel.seq) return;
+      readout.textContent = `${label} · ${err.message}`;
+    } finally {
+      if (seq === travel.seq) readout.classList.remove("loading");
     }
   }, 120);
 }
@@ -463,8 +502,13 @@ async function loadAll() {
     state.series = buildSeries(entries.data, state.account?.normal_balance || "debit");
     renderBalance();
     renderBalanceTable();
-    $("travel").value = 100;
-    onTravel();
+    // only re-pin to "now" when the reader has not scrubbed and is not
+    // mid-drag; otherwise a background refresh yanks the handle out of
+    // their hand every five seconds
+    if (!travel.pinned && !travel.dragging) {
+      $("travel").value = 100;
+      onTravel();
+    }
     renderFeed(transactions.data);
     renderSignals(signals.data);
     renderCategories(categories.data);
@@ -504,9 +548,18 @@ $("theme-toggle").addEventListener("click", () => {
 $("refresh").addEventListener("click", loadAll);
 $("account-picker").addEventListener("change", (e) => {
   state.accountId = e.target.value;
+  travel.pinned = false;          // a different account starts at "now"
+  $("travel-live").hidden = true;
   loadAll();
 });
 $("travel").addEventListener("input", onTravel);
+// pointer and keyboard both count as "in progress": a refresh landing between
+// two arrow-key presses is just as disruptive as one landing mid-drag
+["pointerdown", "keydown"].forEach((evt) =>
+  $("travel").addEventListener(evt, () => { travel.dragging = true; }));
+["pointerup", "pointercancel", "blur", "keyup"].forEach((evt) =>
+  $("travel").addEventListener(evt, () => { travel.dragging = false; }));
+$("travel-live").addEventListener("click", setLive);
 $("balance-table-toggle").addEventListener("click", (e) => {
   const table = $("balance-table");
   const shown = !table.hidden;

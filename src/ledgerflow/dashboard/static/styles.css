@@ -221,3 +221,19 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
   background: none; border: none; color: var(--text-secondary);
   font-size: 12px; padding: 2px 0; text-decoration: underline; cursor: pointer;
 }
+
+/* The slider's escape hatch: only shown once the reader has scrubbed away. */
+.live-btn {
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--series-1);
+  background: var(--series-1-soft);
+  color: var(--series-1);
+  white-space: nowrap;
+}
+.live-btn:hover { background: var(--series-1); color: #fff; }
+
+/* Fetching a new balance dims the old one instead of erasing it, so dragging
+   reads as continuous rather than as repeated failure. */
+.readout.loading { opacity: 0.55; }
