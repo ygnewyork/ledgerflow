@@ -223,6 +223,15 @@ function renderBalance() {
   const last = series[series.length - 1];
   svg.appendChild(el("circle", { cx: x(last.t), cy: y(last.balance), r: 4, class: "marker" }));
 
+  // A layer the time-travel marker draws into. Kept separate from the series
+  // so scrubbing never re-renders the chart itself -- redrawing the whole path
+  // on every input event is what makes a slider feel laggy.
+  const travelLayer = el("g", { id: "travel-layer" });
+  svg.appendChild(travelLayer);
+
+  // stash the scales so onTravel() can place the marker directly
+  state.chart = { x, y, t0, t1, W, H, m, layer: travelLayer };
+
   const crossX = el("line", { class: "crosshair", y1: m.top, y2: H - m.bottom, opacity: 0 });
   const dot = el("circle", { r: 4.5, class: "marker", opacity: 0 });
   svg.append(crossX, dot);
@@ -255,6 +264,46 @@ function renderBalance() {
     hideTip();
   });
   svg.appendChild(hit);
+
+  if (travel.pinned) drawTravelMarker();
+}
+
+/* Marks where the slider is sitting, and shades everything after it.
+ *
+ * Without this the slider changes a number and nothing else, so there is no
+ * way to see WHERE in the history you are. The shaded region is the point: it
+ * is the part of the ledger that had not happened yet at the instant you are
+ * looking at. */
+function drawTravelMarker() {
+  const chart = state.chart;
+  if (!chart || state.series.length < 2) return;
+  chart.layer.replaceChildren();
+  if (!travel.pinned) return;
+
+  const pct = Number($("travel").value) / 100;
+  const at = chart.t0 + (chart.t1 - chart.t0) * pct;
+  const px = chart.x(at);
+
+  // the balance at that instant, from the series we already hold -- the
+  // authoritative figure still comes from the API for the readout
+  let point = state.series[0];
+  for (const p of state.series) {
+    if (p.t <= at) point = p; else break;
+  }
+
+  chart.layer.appendChild(el("rect", {
+    x: px, y: chart.m.top,
+    width: Math.max(0, chart.W - chart.m.right - px),
+    height: chart.H - chart.m.top - chart.m.bottom,
+    class: "travel-future",
+  }));
+  chart.layer.appendChild(el("line", {
+    x1: px, x2: px, y1: chart.m.top, y2: chart.H - chart.m.bottom,
+    class: "travel-line",
+  }));
+  chart.layer.appendChild(el("circle", {
+    cx: px, cy: chart.y(point.balance), r: 5, class: "travel-dot",
+  }));
 }
 
 function renderBalanceTable() {
@@ -292,6 +341,7 @@ function setLive() {
   travel.pinned = false;
   $("travel").value = 100;
   $("travel-live").hidden = true;
+  if (state.chart) state.chart.layer.replaceChildren();
   onTravel();
 }
 
@@ -314,6 +364,10 @@ function onTravel() {
 
   // Keep the previous number on screen while the new one is in flight. Blanking
   // it to an ellipsis on every input event makes a drag look like it is failing.
+  // move the marker synchronously; waiting on the network to show the handle's
+  // own position is what would make dragging feel unresponsive
+  drawTravelMarker();
+
   const readout = $("travel-readout");
   readout.dataset.at = label;
   readout.classList.add("loading");

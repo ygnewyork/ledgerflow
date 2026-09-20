@@ -237,3 +237,13 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
 /* Fetching a new balance dims the old one instead of erasing it, so dragging
    reads as continuous rather than as repeated failure. */
 .readout.loading { opacity: 0.55; }
+
+/* Time-travel marker. Distinct from the hover crosshair: that one is a
+   transient hairline, this one is a held position. */
+.travel-line { stroke: var(--series-1); stroke-width: 2; }
+.travel-dot  { fill: var(--series-1); stroke: var(--surface-1); stroke-width: 2.5; }
+
+/* Everything to the right of the marker had not happened yet at the instant
+   being viewed, so it is shaded back rather than hidden -- the shape of what
+   comes next is useful context, it just is not part of the answer. */
+.travel-future { fill: var(--surface-1); opacity: 0.72; }
