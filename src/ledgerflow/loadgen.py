@@ -31,10 +31,9 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterator
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from . import ids
 from .adapters.db import unit_of_work
 from .application.errors import TransactionDeclined
 from .application.services import TenantContext, post_transaction, record_decline
@@ -438,7 +437,8 @@ def _fit_to_checking(events: list[Event], rng: random.Random) -> tuple[list[Even
     for event in events:
         accounts = event.accounts
         into_checking = (
-            (event.kind in ("deposit", "opening_balance") and accounts.get("destination") == "checking")
+            (event.kind in ("deposit", "opening_balance")
+             and accounts.get("destination") == "checking")
             or (event.kind == "transfer" and accounts.get("destination") == "checking")
             or (event.kind == "refund" and accounts.get("funding") == "checking")
         )
@@ -495,7 +495,7 @@ def generate(
     """
     rng = random.Random(seed)
     ctx = TenantContext(tenant_id=tenant_id, api_key_id="loadgen", mode=mode)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start = now - timedelta(days=days)
 
     events = _with_card_payoffs(_timeline(start, days, rng), start, days, rng)

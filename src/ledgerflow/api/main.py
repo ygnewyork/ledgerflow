@@ -109,7 +109,9 @@ async def version_responses(request: Request, call_next):  # type: ignore[no-unt
 # ---------------------------------------------------------------------------
 
 
-def _error_body(request: Request, *, type_: str, code: str, message: str, param: str | None) -> dict[str, Any]:
+def _error_body(
+    request: Request, *, type_: str, code: str, message: str, param: str | None
+) -> dict[str, Any]:
     return {
         "error": {
             "type": type_,

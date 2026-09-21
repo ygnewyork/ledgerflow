@@ -12,8 +12,9 @@ composes three of them in order.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
-from typing import Any, Callable
+from typing import Any
 
 from ..config import settings
 

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -38,10 +39,9 @@ def pool() -> ConnectionPool:
 def close_pool() -> None:
     global _pool
     if _pool is not None:
-        try:
+        # a pool that will not close is still a pool we are done with
+        with contextlib.suppress(Exception):
             _pool.close()
-        except Exception:  # noqa: BLE001 - shutdown must not raise
-            pass
         _pool = None
 
 
@@ -104,9 +104,8 @@ def unit_of_work() -> Iterator[UnitOfWork]:
     inside a transaction proves nothing about whether the ledger is balanced.
     One boundary, one answer.
     """
-    with pool().connection() as conn:
-        with conn.transaction():
-            yield UnitOfWork(conn)
+    with pool().connection() as conn, conn.transaction():
+        yield UnitOfWork(conn)
 
 
 @contextlib.contextmanager

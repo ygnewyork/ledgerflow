@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql import DataFrame, Window
 from pyspark.sql import functions as F
 
 from . import features, session
@@ -171,7 +171,8 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="job", required=True)
 
     p = sub.add_parser("streaming")
-    p.add_argument("--brokers", default=os.environ.get("LEDGERFLOW_KAFKA_BROKERS", "localhost:9092"))
+    p.add_argument("--brokers",
+                   default=os.environ.get("LEDGERFLOW_KAFKA_BROKERS", "localhost:9092"))
     p.add_argument("--topic", default="transactions.normalized.v1")
     p.add_argument("--output", default="./data/gold/account_features")
     p.add_argument("--checkpoint", default="./_checkpoints")

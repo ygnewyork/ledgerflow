@@ -15,9 +15,9 @@ table in the docs from the code, so they cannot drift apart.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Mapping
 
 from .ledger import Direction, Entry, JournalTransaction, LedgerError
 from .money import Money

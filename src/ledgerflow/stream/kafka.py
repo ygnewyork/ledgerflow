@@ -19,7 +19,7 @@ causal relationship, so global ordering would be a cost with no benefit.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..config import settings
@@ -84,7 +84,7 @@ class KafkaStream:
                 event_id=body["event_id"],
                 event_type=body["event_type"],
                 payload=body["payload"],
-                published_at=datetime.now(timezone.utc),
+                published_at=datetime.now(UTC),
             ))
         return out
 

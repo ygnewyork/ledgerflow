@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from ledgerflow import ids
 from ledgerflow.adapters.db import read_only, unit_of_work
@@ -12,10 +10,10 @@ from ledgerflow.application.services import post_transaction
 from ledgerflow.domain.money import Money
 from ledgerflow.features import rules, windows
 from ledgerflow.features.compute import compute
-from ledgerflow.stream import LEDGER_EVENTS, NORMALIZED_TRANSACTIONS, get_stream
+from ledgerflow.stream import NORMALIZED_TRANSACTIONS, get_stream
 from ledgerflow.workers import drain_all
 
-NOW = datetime(2026, 9, 17, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 17, 16, 0, tzinfo=UTC)
 
 
 def _spend(ctx, when: datetime, amount: int, descriptor: str = "STARBUCKS #04212") -> None:

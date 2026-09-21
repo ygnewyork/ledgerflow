@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -92,7 +91,7 @@ def _worker(
             results.record(elapsed, response.status_code)
             if response.status_code >= 400:
                 results.fail(f"{response.status_code}: {response.text[:160]}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.record((time.perf_counter() - started) * 1000, 0)
             results.fail(f"{type(exc).__name__}: {exc}")
 

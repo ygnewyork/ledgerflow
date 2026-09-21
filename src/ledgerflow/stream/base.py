@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 LEDGER_EVENTS = "ledger.events.v1"
 NORMALIZED_TRANSACTIONS = "transactions.normalized.v1"

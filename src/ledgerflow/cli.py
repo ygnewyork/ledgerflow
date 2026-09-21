@@ -17,8 +17,6 @@ from typing import Any
 
 from . import ids
 from .adapters.db import migrate, read_only, unit_of_work
-from .application.services import TenantContext
-
 
 # A personal chart of accounts, in the five categories double-entry defines.
 # The shape is the teaching tool: money arrives as revenue, sits in assets,
@@ -94,7 +92,6 @@ def cmd_bootstrap(args: argparse.Namespace) -> dict[str, Any]:
     equity) are backfilled rather than missing.
     """
     from .api.auth import create_key
-    from .application import services
     from .domain.ledger import AccountType
 
     out: dict[str, Any] = {"keys": {}, "accounts": {}}
@@ -291,15 +288,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="ledgerflow")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("migrate"); p.add_argument("--directory", default="migrations")
+    p = sub.add_parser("migrate")
+    p.add_argument("--directory", default="migrations")
     p.set_defaults(func=cmd_migrate)
 
     p = sub.add_parser("bootstrap")
-    p.add_argument("--tenant"); p.add_argument("--name", default="Demo Tenant")
+    p.add_argument("--tenant")
+    p.add_argument("--name", default="Demo Tenant")
     p.set_defaults(func=cmd_bootstrap)
 
     p = sub.add_parser("serve")
-    p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8000)
     p.add_argument("--reload", action="store_true")
     p.set_defaults(func=cmd_serve)
 
@@ -311,7 +311,8 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("loadgen")
     p.add_argument("--tenant", help="defaults to the most recent bootstrapped tenant")
     p.add_argument("--count", type=int, default=1000)
-    p.add_argument("--days", type=int, default=90); p.add_argument("--seed", type=int, default=17)
+    p.add_argument("--days", type=int, default=90)
+    p.add_argument("--seed", type=int, default=17)
     p.set_defaults(func=cmd_loadgen)
 
     p = sub.add_parser("reset")
@@ -323,7 +324,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="snapshot accounts with at least this many uncached entries")
     p.set_defaults(func=cmd_snapshot)
 
-    p = sub.add_parser("reconcile"); p.set_defaults(func=cmd_reconcile)
+    p = sub.add_parser("reconcile")
+    p.set_defaults(func=cmd_reconcile)
 
     args = parser.parse_args(argv)
     args.func(args)

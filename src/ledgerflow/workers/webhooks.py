@@ -15,7 +15,6 @@ import hmac
 import json
 import logging
 import time
-from typing import Any
 
 import httpx
 
@@ -114,7 +113,7 @@ def dispatch_once(limit: int = 50, client: httpx.Client | None = None) -> dict[s
                     ok = 200 <= response.status_code < 300
                     body_text = response.text[:2000]
                     error = None if ok else f"HTTP {response.status_code}"
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     ok, response, body_text, error = False, None, None, str(exc)
 
                 if ok:

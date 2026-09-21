@@ -19,8 +19,8 @@ COMMIT would claim a refusal that never happened.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from .compute import Features
 

@@ -60,6 +60,10 @@ jobs:
 
       - run: pytest -q
 
+      # After the tests, so a lint nit never hides a real failure. The rule set
+      # is pinned in pyproject, not left to whatever ruff defaults to that week.
+      - run: ruff check src tests
+
       # tests/test_schema_invariants.sql is deliberately NOT run here. It
       # prints its findings for a human to read and exits 0 either way, so as a
       # CI step it would pass no matter what the database did -- the same fake

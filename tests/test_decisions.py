@@ -9,7 +9,7 @@ the refusal is still written down even though the transaction rolled back.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -22,7 +22,7 @@ from ledgerflow.domain.money import Money
 from ledgerflow.features import rules
 from ledgerflow.features.compute import Features
 
-NOW = datetime(2026, 9, 17, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 17, 16, 0, tzinfo=UTC)
 
 # The advisory rule flags at >10 tiny charges; the blocking rule waits for >12.
 # The probe counts what is already on the ledger, so 13 charges have to land

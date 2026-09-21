@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from fastapi import Header, Request
 
@@ -20,11 +20,11 @@ def parse_timestamp(value: str | None) -> datetime | None:
         return None
     try:
         if value.isdigit():
-            return datetime.fromtimestamp(int(value), tz=timezone.utc)
+            return datetime.fromtimestamp(int(value), tz=UTC)
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         raise LedgerFlowError(f"cannot parse {value!r} as a timestamp") from None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def context(
@@ -59,6 +59,6 @@ def context(
     if not decision.allowed:
         raise RateLimited(
             "too many requests",
-            retry_after=max(1, decision.reset_at - int(datetime.now(timezone.utc).timestamp())),
+            retry_after=max(1, decision.reset_at - int(datetime.now(UTC).timestamp())),
         )
     return ctx

@@ -9,8 +9,9 @@ ORM would hide exactly the parts worth reading.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 import psycopg
 
@@ -755,7 +756,8 @@ class IdempotencyRepository(_Repo):
         )
 
     def complete(
-        self, *, record_id: str, response_code: int, response_body: dict[str, Any], resource_id: str | None
+        self, *, record_id: str, response_code: int,
+        response_body: dict[str, Any], resource_id: str | None
     ) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
@@ -1000,7 +1002,9 @@ class NormalizationRepository(_Repo):
 
 
 class RiskRepository(_Repo):
-    def upsert_features(self, account_id: str, window_end: datetime, features: dict[str, Any]) -> None:
+    def upsert_features(
+        self, account_id: str, window_end: datetime, features: dict[str, Any]
+    ) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
@@ -1164,7 +1168,7 @@ class RiskRepository(_Repo):
               FROM entries e
              WHERE e.account_id = %s
                -- see spend_window: spending is a credit on the funding account
-               AND e.direction = 'credit' 
+               AND e.direction = 'credit'
                AND e.effective_at > %s - make_interval(days => %s)
                AND e.effective_at <= %s
             """,

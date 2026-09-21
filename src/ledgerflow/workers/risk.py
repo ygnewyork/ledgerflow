@@ -32,7 +32,8 @@ class RiskWorker(Consumer):
             occurred_at = datetime.fromisoformat(payload["occurred_at"])
             amount_minor = int(payload["amount_minor"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise PoisonMessage(f"event {message.event_id} is not a normalized transaction") from exc
+            raise PoisonMessage(
+                f"event {message.event_id} is not a normalized transaction") from exc
 
         if self._max_event_time is None or occurred_at > self._max_event_time:
             self._max_event_time = occurred_at

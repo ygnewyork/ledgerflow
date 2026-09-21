@@ -8,11 +8,11 @@ does not know this codebase.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Iterable, Mapping
 
 from .money import CurrencyMismatch, Money
 
@@ -34,7 +34,7 @@ class Direction(str, Enum):
     CREDIT = "credit"
 
     @property
-    def opposite(self) -> "Direction":
+    def opposite(self) -> Direction:
         return Direction.CREDIT if self is Direction.DEBIT else Direction.DEBIT
 
 
@@ -69,7 +69,7 @@ class Account:
     def normal_balance(self) -> Direction:
         return self.type.normal_balance
 
-    def signed(self, entry: "Entry") -> Money:
+    def signed(self, entry: Entry) -> Money:
         """This entry's effect on the account's balance.
 
         Positive when the entry moves the account in its natural direction.
@@ -103,7 +103,7 @@ class Entry:
                 "use the direction to express which way money moved"
             )
 
-    def reversed(self) -> "Entry":
+    def reversed(self) -> Entry:
         return Entry(self.account_id, self.direction.opposite, self.amount)
 
 
@@ -170,7 +170,7 @@ class JournalTransaction:
                 )
         return totals
 
-    def reverse(self, new_id: str, effective_at: datetime | None = None) -> "JournalTransaction":
+    def reverse(self, new_id: str, effective_at: datetime | None = None) -> JournalTransaction:
         """The correcting transaction.
 
         There is no undo. The original stays in the ledger forever; this adds a

@@ -21,16 +21,17 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 import psycopg
 
 from ..adapters.db import UnitOfWork, unit_of_work
-from ..config import settings
-from ..ids import new_id
 from ..application.errors import IdempotencyKeyReuse, RequestInFlight
 from ..application.services import TenantContext
+from ..config import settings
+from ..ids import new_id
 
 
 def fingerprint(method: str, path: str, body: Any) -> bytes:
@@ -52,7 +53,9 @@ class Slot:
     response: dict[str, Any] = field(default_factory=dict)
     status_code: int = 200
 
-    def complete(self, status_code: int, body: dict[str, Any], resource_id: str | None = None) -> None:
+    def complete(
+        self, status_code: int, body: dict[str, Any], resource_id: str | None = None
+    ) -> None:
         """Store the response we are about to return, in this transaction."""
         self.status_code = status_code
         self.response = body

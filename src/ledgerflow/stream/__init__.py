@@ -30,6 +30,11 @@ def get_stream() -> EventStream:
 
 
 __all__ = [
-    "EventStream", "Message", "get_stream", "lag",
-    "LEDGER_EVENTS", "NORMALIZED_TRANSACTIONS", "FRAUD_SIGNALS",
+    "FRAUD_SIGNALS",
+    "LEDGER_EVENTS",
+    "NORMALIZED_TRANSACTIONS",
+    "EventStream",
+    "Message",
+    "get_stream",
+    "lag",
 ]

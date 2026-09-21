@@ -131,7 +131,7 @@ def test_concurrent_duplicate_waits_then_replays(funded):
                 outcome["response"] = slot.response
                 if not slot.replayed:
                     outcome["executed"] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             outcome["error"] = type(exc).__name__
 
     with idempotent(ctx, key, fp) as slot:
@@ -157,9 +157,8 @@ def test_concurrent_duplicate_waits_then_replays(funded):
 
 def test_lock_timeout_turns_an_unbounded_wait_into_a_409(funded, monkeypatch):
     """A duplicate behind a slow request gets 409 rather than hanging forever."""
-    import threading
-
     import dataclasses
+    import threading
 
     from ledgerflow.application.errors import RequestInFlight
     from ledgerflow.config import settings
@@ -182,7 +181,7 @@ def test_lock_timeout_turns_an_unbounded_wait_into_a_409(funded, monkeypatch):
                 outcome["granted"] = True
         except RequestInFlight:
             outcome["rejected"] = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             outcome["error"] = f"{type(exc).__name__}: {exc}"
 
     with idempotent(ctx, key, fp) as slot:

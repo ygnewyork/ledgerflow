@@ -22,11 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 pytest.importorskip("psycopg", reason="integration tests need psycopg")
 
-from ledgerflow import ids  # noqa: E402
-from ledgerflow.adapters.db import migrate, read_only, unit_of_work  # noqa: E402
-from ledgerflow.api.auth import create_key  # noqa: E402
-from ledgerflow.application.services import TenantContext  # noqa: E402
-from ledgerflow.domain.ledger import AccountType  # noqa: E402
+from ledgerflow import ids
+from ledgerflow.adapters.db import migrate, read_only, unit_of_work
+from ledgerflow.api.auth import create_key
+from ledgerflow.application.services import TenantContext
+from ledgerflow.domain.ledger import AccountType
 
 
 def _database_reachable() -> bool:

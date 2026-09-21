@@ -63,7 +63,7 @@ class Money:
     # -- construction ------------------------------------------------------
 
     @classmethod
-    def parse(cls, amount: str | int | Decimal, currency: str) -> "Money":
+    def parse(cls, amount: str | int | Decimal, currency: str) -> Money:
         """Build from a human-facing decimal amount, e.g. ``"84.37"``."""
         code = currency.lower()
         if code not in EXPONENTS:
@@ -88,44 +88,44 @@ class Money:
         return cls(int(shifted), code)
 
     @classmethod
-    def zero(cls, currency: str) -> "Money":
+    def zero(cls, currency: str) -> Money:
         return cls(0, currency)
 
     # -- arithmetic --------------------------------------------------------
 
-    def _same(self, other: "Money") -> None:
+    def _same(self, other: Money) -> None:
         if self.currency != other.currency:
             raise CurrencyMismatch(
                 f"cannot combine {self.currency} and {other.currency}"
             )
 
-    def __add__(self, other: "Money") -> "Money":
+    def __add__(self, other: Money) -> Money:
         self._same(other)
         return Money(self.minor + other.minor, self.currency)
 
-    def __sub__(self, other: "Money") -> "Money":
+    def __sub__(self, other: Money) -> Money:
         self._same(other)
         return Money(self.minor - other.minor, self.currency)
 
-    def __neg__(self) -> "Money":
+    def __neg__(self) -> Money:
         return Money(-self.minor, self.currency)
 
-    def __abs__(self) -> "Money":
+    def __abs__(self) -> Money:
         return Money(abs(self.minor), self.currency)
 
-    def __lt__(self, other: "Money") -> bool:
+    def __lt__(self, other: Money) -> bool:
         self._same(other)
         return self.minor < other.minor
 
-    def __le__(self, other: "Money") -> bool:
+    def __le__(self, other: Money) -> bool:
         self._same(other)
         return self.minor <= other.minor
 
-    def __gt__(self, other: "Money") -> bool:
+    def __gt__(self, other: Money) -> bool:
         self._same(other)
         return self.minor > other.minor
 
-    def __ge__(self, other: "Money") -> bool:
+    def __ge__(self, other: Money) -> bool:
         self._same(other)
         return self.minor >= other.minor
 

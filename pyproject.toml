@@ -46,6 +46,40 @@ pythonpath = ["src"]
 line-length = 100
 target-version = "py311"
 
+# Pinned explicitly so CI and a laptop agree. Without a select, the effective
+# rule set is whatever the installed ruff decides today, which is not a thing
+# to gate a build on.
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "RUF",      # ruff's own
+    "DTZ",      # naive datetimes -- a real bug class in a ledger, where every
+                # timestamp is either business time or system time and a
+                # tz-naive one silently becomes whichever the server prefers
+]
+ignore = [
+    # function-call-in-default-argument: this is how FastAPI spells dependency
+    # injection (`ctx: TenantContext = Depends(context)`). 26 hits, all of them
+    # the framework's intended usage.
+    "B008",
+    # str+Enum -> StrEnum is not a refactor, it is a behavior change: StrEnum's
+    # __str__ returns "debit" where str+Enum returns "Direction.DEBIT". Every
+    # f-string holding a Direction or AccountType would start producing a
+    # different string, which in a ledger means log lines and error messages
+    # silently changing shape. Not worth it for a style rule.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Fixtures are imported for their side effect of existing.
+"tests/conftest.py" = ["F401"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

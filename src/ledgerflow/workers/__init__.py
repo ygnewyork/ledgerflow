@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 
 
 def run_worker(name: str, *, once: bool = False) -> None:

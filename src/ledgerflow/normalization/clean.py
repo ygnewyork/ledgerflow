@@ -62,17 +62,21 @@ _PATTERNS = [
 
 # Trailing state codes. Only stripped at the END, so 'CA Pizza Kitchen' keeps
 # its CA and 'STARBUCKS CA' loses it.
-_STATES = (
-    "al ak az ar ca co ct de fl ga hi id il in ia ks ky la me md ma mi mn ms "
-    "mo mt ne nv nh nj nm ny nc nd oh ok or pa ri sc sd tn tx ut vt va wa wv wi wy dc"
-).split()
+_STATES = [
+    "al", "ak", "az", "ar", "ca", "co", "ct", "de", "fl", "ga", "hi", "id",
+    "il", "in", "ia", "ks", "ky", "la", "me", "md", "ma", "mi", "mn", "ms",
+    "mo", "mt", "ne", "nv", "nh", "nj", "nm", "ny", "nc", "nd", "oh", "ok",
+    "or", "pa", "ri", "sc", "sd", "tn", "tx", "ut", "vt", "va", "wa", "wv",
+    "wi", "wy", "dc",
+]
 
 _DOMAIN = re.compile(r"(?:https?://)?(?:www\.)?\b([a-z0-9-]+)\.(?:com|net|org|co|io)\b")
 _PUNCT = re.compile(r"[*#,;:_/\\|]+")
 # hyphens become spaces so 'h-e-b' and 'wal-mart' reach their aliases.
 # apostrophes are dropped outright, not spaced: "mcdonald's" must collapse to
 # "mcdonalds" to reach its alias, and "mcdonald s" would not.
-_APOSTROPHE = re.compile(r"['’]")
+# Both apostrophes on purpose: real descriptors carry the curly one.
+_APOSTROPHE = re.compile(r"['’]")  # noqa: RUF001
 _NONWORD = re.compile(r"[^a-z0-9&\s]")
 _SPACES = re.compile(r"\s+")
 

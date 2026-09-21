@@ -19,6 +19,7 @@ therefore implemented once here rather than in each worker:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 import signal
@@ -52,8 +53,13 @@ class Consumer(ABC):
     def handle(self, uow: UnitOfWork, message: Message) -> None:
         """Do the work. Runs inside the transaction that holds the claim."""
 
-    def on_idle(self) -> None:
-        """Hook for periodic maintenance when there is nothing to process."""
+    def on_idle(self) -> None:  # noqa: B027
+        """Hook for periodic maintenance when there is nothing to process.
+
+        Deliberately concrete and empty, not abstract: most consumers have no
+        idle work, and forcing every one of them to write ``pass`` would be a
+        worse interface than letting them say nothing.
+        """
 
 
 _shutdown = False
@@ -66,10 +72,9 @@ def _install_signal_handlers() -> None:
         log.info("shutdown requested; finishing the current message")
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        # not on the main thread (tests): there is no handler to install
+        with contextlib.suppress(ValueError):
             signal.signal(sig, stop)
-        except ValueError:
-            pass  # not on the main thread (tests)
 
 
 def process_one(consumer: Consumer, message: Message) -> bool:
@@ -93,7 +98,7 @@ def process_one(consumer: Consumer, message: Message) -> bool:
         except PoisonMessage as exc:
             last_error = exc
             break  # retrying a poison message is just burning cycles
-        except Exception as exc:  # noqa: BLE001 - transient until proven otherwise
+        except Exception as exc:
             last_error = exc
             if attempt < settings.consumer_max_attempts:
                 # jitter, so N workers hitting the same downed dependency do

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request
 
 from ... import ids
 from ...adapters.db import read_only
@@ -13,7 +13,7 @@ from ...application import serializers, services
 from ...application.errors import LedgerFlowError, NotFound
 from ...application.services import TenantContext
 from ...domain.money import Money, MoneyError
-from ...stream import LEDGER_EVENTS, get_stream
+from ...stream import get_stream
 from ..deps import context, parse_timestamp
 from ..idempotency import fingerprint, idempotent
 from ..schemas import (
@@ -499,7 +499,7 @@ def _window(
     two runs wants a fixed period whose answer does not drift as the clock
     moves.
     """
-    finish = parse_timestamp(end) or datetime.now(timezone.utc)
+    finish = parse_timestamp(end) or datetime.now(UTC)
     begin = parse_timestamp(start) or finish - timedelta(days=days)
     if begin >= finish:
         raise LedgerFlowError("start must be before end", param="start")

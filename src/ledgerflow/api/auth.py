@@ -17,9 +17,9 @@ import secrets
 from typing import Any
 
 from ..adapters.db import UnitOfWork
+from ..application.errors import AuthenticationError
 from ..config import settings
 from ..ids import new_id
-from ..application.errors import AuthenticationError
 
 
 def generate_key(mode: str) -> str:

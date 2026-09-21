@@ -11,7 +11,7 @@ running checking balance. These tests pin both.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -19,7 +19,7 @@ from ledgerflow import loadgen
 from ledgerflow.adapters.db import read_only
 from ledgerflow.loadgen import Event, _fit_to_checking
 
-NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 
 
 def test_a_discretionary_transfer_shrinks_to_what_is_there():
@@ -88,9 +88,9 @@ def test_an_account_opening_at_zero_emits_no_entry(monkeypatch):
 def test_a_generated_history_posts_without_overdrawing(tenant, days, seed):
     """The end-to-end guarantee: every event the generator emits is one the
     ledger accepts, across day counts and seeds."""
+    from ledgerflow import ids
     from ledgerflow.adapters.db import unit_of_work
     from ledgerflow.domain.ledger import AccountType
-    from ledgerflow import ids
 
     # the fixture's chart of accounts is minimal; loadgen needs the full one
     with unit_of_work() as uow:

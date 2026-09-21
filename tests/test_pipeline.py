@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-
 from ledgerflow import ids
-from ledgerflow.adapters.db import read_only, unit_of_work
+from ledgerflow.adapters.db import read_only
 from ledgerflow.stream import LEDGER_EVENTS, get_stream
-from ledgerflow.workers import drain_all
-from ledgerflow.workers import outbox_relay
+from ledgerflow.workers import drain_all, outbox_relay
 from ledgerflow.workers.outbox_relay import relay_once
 from ledgerflow.workers.runner import Consumer, PoisonMessage, process_one, run
 
 
-def _purchase(client, key: str = None, **overrides):
+def _purchase(client, key: str | None = None, **overrides):
     body = {
         "kind": "card_purchase", "amount": 8437,
         "accounts": {"expense": "groceries", "funding": "checking"},

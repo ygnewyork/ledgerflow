@@ -9,9 +9,10 @@ opens a second transaction behind your back.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from .. import ids
 from ..adapters.db import UnitOfWork
@@ -38,7 +39,7 @@ class TenantContext:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +168,9 @@ def record_decline(ctx: TenantContext, exc: TransactionDeclined) -> None:
         )
 
 
-def _check_floors(uow: UnitOfWork, txn: JournalTransaction, account_rows: dict[str, dict[str, Any]]) -> None:
+def _check_floors(
+    uow: UnitOfWork, txn: JournalTransaction, account_rows: dict[str, dict[str, Any]]
+) -> None:
     """Enforce minimum balances for the accounts this posting decreases.
 
     Only accounts that declare a floor take the row lock. That keeps expense
@@ -419,7 +422,7 @@ def balance(
 
 def health(uow: UnitOfWork) -> dict[str, Any]:
     """What the dashboard's system panel shows."""
-    from ..stream import LEDGER_EVENTS, NORMALIZED_TRANSACTIONS
+    from ..stream import NORMALIZED_TRANSACTIONS
     from ..stream import lag as stream_lag
 
     # each group against the topic it actually consumes; measuring risk

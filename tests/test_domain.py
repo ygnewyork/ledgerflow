@@ -7,16 +7,17 @@ Plain unittest so the core can be verified with no dependencies installed:
 
 from __future__ import annotations
 
+import dataclasses
 import random
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ledgerflow.domain import (  # noqa: E402
+from ledgerflow.domain import (
     Account,
     AccountType,
     CurrencyMismatch,
@@ -36,7 +37,7 @@ from ledgerflow.domain import (  # noqa: E402
     describe_rules,
 )
 
-NOW = datetime(2026, 9, 17, 16, 21, tzinfo=timezone.utc)
+NOW = datetime(2026, 9, 17, 16, 21, tzinfo=UTC)
 
 
 class TestMoney(unittest.TestCase):
@@ -149,12 +150,12 @@ class TestTransactionInvariant(unittest.TestCase):
                     Entry("acct_a", Direction.DEBIT, Money(1, "usd")),
                     Entry("acct_b", Direction.CREDIT, Money(1, "usd")),
                 ),
-                effective_at=datetime(2026, 9, 17, 16, 21),
+                effective_at=datetime(2026, 9, 17, 16, 21),  # noqa: DTZ001 -- the point
             )
 
     def test_entries_are_immutable(self):
         entry = Entry("acct_a", Direction.DEBIT, Money(100, "usd"))
-        with self.assertRaises(Exception):
+        with self.assertRaises(dataclasses.FrozenInstanceError):
             entry.amount = Money(1, "usd")  # type: ignore[misc]
 
 
