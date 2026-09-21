@@ -2,13 +2,13 @@
 
 [![tests](https://github.com/ygnewyork/ledgerflow/actions/workflows/tests.yml/badge.svg)](https://github.com/ygnewyork/ledgerflow/actions/workflows/tests.yml)
 
-A real-time financial event platform: an HTTP API that ingests transaction
+A real-time financial event platform, where an HTTP API ingests transaction
 events, posts them to an immutable double-entry ledger, fans them out through a
 durable event stream, and exposes balances, analytics, and webhooks to
 developers.
 
 **Status: running.** The ledger, API, workers, Spark jobs, and dashboard are
-built and tested — 99 tests against a real PostgreSQL, plus 14 SQL invariant
+built and tested, with 99 tests against PostgreSQL, and 14 SQL invariant
 assertions. See [Running it](#running-it) below and
 [`docs/05-roadmap.md`](docs/05-roadmap.md) for what each milestone delivered.
 
@@ -19,8 +19,6 @@ assertions. See [Running it](#running-it) below and
 > Money movement is recorded exactly once, is never silently lost or
 > double-counted, and every derived number (balance, aggregate, fraud signal)
 > can be recomputed from the log.
-
-Everything below exists to defend that sentence.
 
 ---
 
