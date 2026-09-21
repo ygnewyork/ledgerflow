@@ -9,7 +9,7 @@ developers.
 
 ---
 
-> Money movement is recorded exactly once, is never silently lost or
+> Money movement is recorded exactly once, never silently lost or
 > double-counted, and every derived number (balance, aggregate, fraud signal)
 > can be recomputed from the log.
 
@@ -24,7 +24,7 @@ category, and a ledger explorer showing a transaction's entries balancing.](imag
 ## How it works
 
 Every transaction is written twice: once for where the money left, once for
-where it landed. Add up every entry in the system and it comes to zero. That is
+where it landed. The sum of these events is zero, which is
 what makes the books checkable. You never need to know what a balance should
 be, only that the total is still zero.
 
@@ -35,7 +35,7 @@ hand-written SQL statement.
 
 Writes are idempotent. Every request carries an `Idempotency-Key`, and the
 record of that key commits **in the same transaction** as the ledger entries it
-describes. That placement is the whole point: write the key first and a crash
+describes. That placement is important: write the key first and a crash
 can leave it claimed for work that never happened, write it after and money can
 move with no record of the request that moved it.
 
@@ -98,16 +98,16 @@ the features in batch so a model can train on history, and
                   └──────────► Delta Lake / Spark ──► features + backfills
 ```
 
-The consumers are all **derived state**. If any of them is wrong, you delete its
+The consumers are all derived state. If any of them is wrong, you delete its
 output and replay the stream. Postgres holds the only state that cannot be
-rebuilt: the ledger and the idempotency records.
+rebuilt, which is the ledger and the idempotency records.
 
 ---
 
 ## What it looks like
 
 **Pipeline health.** Outbox lag, consumer lag, dead letters, webhook delivery,
-and ledger drift. Drift must always be zero: a nonzero value means money was
+and ledger drift. This drift must always be zero: a nonzero value means money was
 created or destroyed.
 
 ![System health tiles](images/system-health.png)
@@ -128,12 +128,11 @@ zero when checking pays it off. The sawtooth is the statement cycle.
 ![Credit card balance sawtooth](images/credit-card-cycle.png)
 
 **Spend by category.** Grouped by the expense account each posting was booked
-to, so the totals reconcile with the ledger rather than with a guess about the
-merchant.
+to, so the totals reconcile with the ledger.
 
 ![Spend by category](images/spend-by-category.png)
 
-**Fraud signals.** Advisory rules flag; blocking rules decline. A declined
+**Fraud signals.** Advisory rules flag and blocking rules decline. A declined
 attempt shows what was tried and states plainly that no ledger entry was
 written, because no money moved.
 
@@ -144,7 +143,7 @@ and credits cancelling.
 
 ![Ledger explorer showing debits and credits cancelling](images/ledger-explorer.png)
 
-**Dark mode**, because the dashboard is the thing you leave open.
+**Dark mode**
 
 ![The dashboard in dark mode](images/dashboard-dark.png)
 
