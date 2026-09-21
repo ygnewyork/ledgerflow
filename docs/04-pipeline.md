@@ -200,9 +200,16 @@ If you evaluate a September 17 transaction using a window that includes
 September 18 data, you have leaked the future into the decision. Online it is
 merely wrong; offline, if you ever train on it, the model learns from
 information it will never have at inference time, scores beautifully in
-backtest, and fails in production. Same code path, same window semantics, both
-online and offline — that is what "offline/online parity" means and why feature
-stores exist at all.
+backtest, and fails in production.
+
+There are two parity claims here and they are not the same claim. The streaming
+job and the backfill job call one function, so they cannot drift from each other
+— that one holds, by construction. The online risk worker and the Spark jobs
+are *separate implementations*, and sharing `features/windows.py` only makes
+them agree about when a window starts and ends. It does not make them agree
+about which rows go inside it. Measured on the demo dataset, they disagree on
+1.6% of windows; `docs/07-spark-run.md` has the mechanism and the numbers, and
+`python -m ledgerflow.spark.parity` is how you check it on any dataset.
 
 Every emitted signal stores its `features` blob, so any decision can be
 explained and reproduced months later.

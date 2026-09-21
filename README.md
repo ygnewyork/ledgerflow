@@ -301,6 +301,9 @@ curl -X POST localhost:8000/v1/transactions \
   author's laptop stops running
 - `python -m ledgerflow.cli reconcile` — recompute every balance from entries
   and diff against the snapshot cache
+- `python -m ledgerflow.spark.parity` — measure online/offline feature skew.
+  Exits nonzero when the Spark features and the risk worker's features disagree
+  ([what it found](docs/07-spark-run.md))
 
 Kafka instead of Postgres for the stream, and the Spark jobs:
 
