@@ -4,7 +4,7 @@ The risk with a project this shape is that it becomes eight half-built
 subsystems. So every milestone below has a **done when** that is demonstrable,
 and each one is independently worth showing even if you stop there.
 
-**Built: M1–M7.** Everything runs, with 93 tests against a real PostgreSQL and
+**Built: M1–M7.** Everything runs, with 99 tests against a real PostgreSQL and
 a load test whose numbers are measured rather than claimed — see
 [`06-load-test.md`](06-load-test.md).
 

@@ -1,12 +1,14 @@
 # LedgerFlow
 
+[![tests](https://github.com/ygnewyork/ledgerflow/actions/workflows/tests.yml/badge.svg)](https://github.com/ygnewyork/ledgerflow/actions/workflows/tests.yml)
+
 A real-time financial event platform: an HTTP API that ingests transaction
 events, posts them to an immutable double-entry ledger, fans them out through a
 durable event stream, and exposes balances, analytics, and webhooks to
 developers.
 
 **Status: running.** The ledger, API, workers, Spark jobs, and dashboard are
-built and tested — 93 tests against a real PostgreSQL, plus 14 SQL invariant
+built and tested — 99 tests against a real PostgreSQL, plus 14 SQL invariant
 assertions. See [Running it](#running-it) below and
 [`docs/05-roadmap.md`](docs/05-roadmap.md) for what each milestone delivered.
 
@@ -294,7 +296,9 @@ curl -X POST localhost:8000/v1/transactions \
 - `python -m ledgerflow.bench --key lf_test_... --sweep --funding-accounts 32`
   — the load test ([results](docs/06-load-test.md))
 - `http://localhost:8000/docs` — the generated OpenAPI browser, all 22 routes
-- `make test` — 93 tests against the real database
+- `make test` — 99 tests against the real database. The same suite runs in CI
+  against a PostgreSQL service container, because a suite that only runs on the
+  author's laptop stops running
 - `python -m ledgerflow.cli reconcile` — recompute every balance from entries
   and diff against the snapshot cache
 
@@ -330,7 +334,7 @@ src/ledgerflow/
   features/             window definitions shared by the online and offline paths
   spark/                streaming + backfill jobs, point-in-time training joins
   dashboard/static/     the operator UI -- vanilla JS, no build step
-tests/                  93 tests + 14 SQL invariant assertions
+tests/                  99 tests + 14 SQL invariant assertions
 ```
 
 The `domain/` package imports nothing from FastAPI, SQLAlchemy, or Kafka, and

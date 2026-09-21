@@ -1,0 +1,63 @@
+# The suite talks to a real PostgreSQL on purpose: the deferred balance
+# trigger, ON CONFLICT DO NOTHING, FOR UPDATE SKIP LOCKED and the idempotency
+# race are the things most worth testing, and none of them exist in a mock.
+# So CI runs one too, as a service container.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ledgerflow
+          POSTGRES_PASSWORD: ledgerflow
+          POSTGRES_DB: ledgerflow_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ledgerflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # CI is set by Actions, and conftest turns an unreachable database into a
+      # failure rather than a skipped suite when it sees it. Without that, a
+      # broken service container is a green badge over 99 tests that never ran.
+      LEDGERFLOW_DATABASE_URL: postgresql://ledgerflow:ledgerflow@localhost:5432/ledgerflow_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # `stream` (confluent-kafka) and `analytics` (pyspark) are left out:
+      # the Kafka adapter is imported lazily and the whole suite runs on the
+      # Postgres EventStream, which is the point of having the port.
+      - run: pip install -e ".[api,dev]"
+
+      # Separate from pytest so a migration failure reads as a migration
+      # failure, not as 99 confusing test errors.
+      - run: python -m ledgerflow.cli migrate
+
+      - run: pytest -q
+
+      # tests/test_schema_invariants.sql is deliberately NOT run here. It
+      # prints its findings for a human to read and exits 0 either way, so as a
+      # CI step it would pass no matter what the database did -- the same fake
+      # green that the CI guard in conftest exists to prevent.

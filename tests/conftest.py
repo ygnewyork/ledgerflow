@@ -41,10 +41,17 @@ def _database_reachable() -> bool:
 @pytest.fixture(scope="session", autouse=True)
 def database() -> None:
     if not _database_reachable():
-        pytest.skip(
+        where = (
             "no database at LEDGERFLOW_DATABASE_URL="
             f"{os.environ.get('LEDGERFLOW_DATABASE_URL', '(unset)')}"
         )
+        # Skipping is right on a laptop with no Postgres running -- the domain
+        # tests still say something useful. In CI it is a trap: every test
+        # skips, pytest exits 0, and the badge goes green over a suite that
+        # never ran. A misconfigured database has to be a failure there.
+        if os.environ.get("CI"):
+            raise RuntimeError(f"{where} (refusing to skip the suite in CI)")
+        pytest.skip(where)
     migrate(str(Path(__file__).resolve().parents[1] / "migrations"))
 
 
