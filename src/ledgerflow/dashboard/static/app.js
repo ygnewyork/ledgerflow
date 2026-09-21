@@ -636,15 +636,34 @@ function renderSignals(signals) {
     return;
   }
   const severity = (s) => (s >= 0.7 ? "critical" : s >= 0.5 ? "serious" : "warning");
-  $("signals").innerHTML = signals.map((s) => `
-    <div style="padding:9px 0;border-bottom:1px solid var(--grid)">
-      <span class="status ${severity(s.score)}">${s.rule}</span>
-      <span class="mono" style="float:right">${s.score.toFixed(2)}</span>
+
+  // Declines first, and marked as such. A refused posting and a flagged one
+  // are different events: one has a ledger entry and one never will, and a
+  // list that renders them identically hides the only thing that matters.
+  const ordered = [...signals].sort((a, b) =>
+    (b.action === "block") - (a.action === "block")
+    // evaluated_at is an ISO string: subtracting two of them is NaN, which
+    // sorts as "equal" and quietly does nothing. Parse before comparing.
+    || Date.parse(b.evaluated_at) - Date.parse(a.evaluated_at));
+
+  $("signals").innerHTML = ordered.map((s) => {
+    const blocked = s.action === "block";
+    return `
+    <div class="signal${blocked ? " is-blocked" : ""}">
+      <span class="status ${blocked ? "critical" : severity(s.score)}">${s.rule}</span>
+      <span class="verdict ${blocked ? "verdict--block" : "verdict--flag"}">
+        ${blocked ? "DECLINED" : "flagged"}</span>
+      <span class="mono score">${s.score.toFixed(2)}</span>
       <div class="mono">${when(s.evaluated_at)}</div>
-      <div class="mono">1h spend ${money(s.features?.spend_1h || 0)}
-        &middot; ${s.features?.txn_count_1h ?? 0} txns/h
-        &middot; z ${(s.features?.amount_zscore ?? 0).toFixed(2)}</div>
-    </div>`).join("");
+      ${blocked
+        ? `<div class="mono">attempted ${money(s.attempted_amount || 0)} &middot;
+             ${s.features?.txn_count_1h ?? 0} txns in the hour &middot;
+             <strong>no ledger entry written</strong></div>`
+        : `<div class="mono">1h spend ${money(s.features?.spend_1h || 0)}
+             &middot; ${s.features?.txn_count_1h ?? 0} txns/h
+             &middot; z ${(s.features?.amount_zscore ?? 0).toFixed(2)}</div>`}
+    </div>`;
+  }).join("");
 }
 
 async function showTransaction(id) {

@@ -124,6 +124,19 @@ def _error_body(request: Request, *, type_: str, code: str, message: str, param:
 
 @app.exception_handler(LedgerFlowError)
 async def handle_app_error(request: Request, exc: LedgerFlowError) -> JSONResponse:
+    # A decline is evidence. Its own transaction already rolled back with the
+    # posting it refused, so the record is written here, on the way out.
+    from ..application.errors import TransactionDeclined
+    from ..application.services import record_decline
+
+    if isinstance(exc, TransactionDeclined) and getattr(request.state, "ctx", None):
+        try:
+            record_decline(request.state.ctx, exc)
+        # Deliberately broad: recording the decline is bookkeeping, and a
+        # failure here must never mask the decline the caller came for.
+        except Exception:
+            log.exception("could not record a decline")
+
     headers = {}
     if retry_after := exc.extra.get("retry_after"):
         headers["Retry-After"] = str(retry_after)

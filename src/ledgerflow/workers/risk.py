@@ -69,7 +69,10 @@ class RiskWorker(Consumer):
             "stddev_90d": features.stddev_amount_90d,
         })
 
-        fired = rules.evaluate(features)
+        # advisory only. A blocking rule evaluated here would be theatre: the
+        # money moved before this worker ever saw the event, so recording a
+        # "block" after the fact claims a refusal that never happened.
+        fired = rules.advisory(features)
         for rule in fired:
             signal = uow.risk.insert_signal(
                 signal_id=ids.new_id("sig"),

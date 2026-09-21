@@ -26,6 +26,7 @@ from .errors import (
     CurrencyMismatchError,
     InsufficientFunds,
     NotFound,
+    TransactionDeclined,
 )
 
 
@@ -86,6 +87,84 @@ def create_account(
 # ---------------------------------------------------------------------------
 # Posting
 # ---------------------------------------------------------------------------
+
+
+def _screen(
+    uow: UnitOfWork,
+    ctx: TenantContext,
+    *,
+    funding: dict[str, Any],
+    amount: Money,
+    at: datetime,
+) -> None:
+    """Blocking risk checks, inside the write transaction.
+
+    This is the half of risk that the async worker cannot do. A worker runs
+    after COMMIT: by the time it has an opinion the money has moved, so it can
+    annotate and nothing else. To actually refuse a posting the check has to
+    happen here, before the entries exist.
+
+    That placement is the whole cost of blocking. Every write now pays for this
+    query, and a false positive declines a real purchase at a till rather than
+    raising a flag someone reads later. So the bar is deliberately higher than
+    the advisory rule that shadows it, and the set of blocking rules is kept
+    small enough to name.
+    """
+    from ..features import rules
+    from ..features.compute import Features
+
+    if not rules.BLOCKING:
+        return
+
+    probe = uow.risk.velocity_probe(funding["id"], at)
+    features = Features(
+        account_id=funding["id"], as_of=at, amount_minor=amount.minor,
+        spend_1h=0, spend_24h=0,
+        txn_count_1h=int(probe["txn_count"]),
+        max_amount_1h=int(probe["max_amount_minor"]),
+        distinct_merchants_7d=0, merchant_frequency=0,
+        avg_amount_90d=0.0, stddev_amount_90d=0.0,
+    )
+
+    for rule in rules.BLOCKING:
+        if not rule.evaluate(features):
+            continue
+        raise TransactionDeclined(
+            f"declined: {rule.description}",
+            param="accounts",
+            rule=rule.name,
+            score=rule.score,
+            account=funding["id"],
+            declined_amount=amount.minor,
+            features={"txn_count_1h": features.txn_count_1h,
+                      "max_amount_1h": features.max_amount_1h},
+        )
+
+
+def record_decline(ctx: TenantContext, exc: TransactionDeclined) -> None:
+    """Write the decline down, in a transaction of its own.
+
+    The posting's transaction is rolling back -- that is what "declined" means
+    -- so anything written inside it disappears with it. A decline recorded
+    there would leave no trace of the one event a customer is most likely to
+    call about, and the ledger correctly has no entry, because no money moved.
+    """
+    from .. import ids
+    from ..adapters.db import unit_of_work
+
+    with unit_of_work() as uow:
+        uow.risk.record_decline(
+            signal_id=ids.new_id("sig"),
+            tenant_id=ctx.tenant_id,
+            account_id=exc.extra["account"],
+            rule=exc.extra["rule"],
+            # from the rule that fired, not a constant: a second blocking rule
+            # or a retuned threshold must not silently inherit this one's score
+            score=exc.extra["score"],
+            amount_minor=exc.extra["declined_amount"],
+            reason=exc.message,
+            features=exc.extra.get("features", {}),
+        )
 
 
 def _check_floors(uow: UnitOfWork, txn: JournalTransaction, account_rows: dict[str, dict[str, Any]]) -> None:
@@ -172,6 +251,12 @@ def post_transaction(
     )
 
     by_id = {row["id"]: row for row in resolved.values()}
+
+    funding_role = next((r for r in ("funding", "source") if r in resolved), None)
+    if funding_role is not None:
+        _screen(uow, ctx, funding=resolved[funding_role], amount=amount,
+                at=effective_at)
+
     _check_floors(uow, txn, by_id)
 
     txn_row = uow.transactions.insert(txn, tenant_id=ctx.tenant_id, mode=ctx.mode)

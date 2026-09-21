@@ -70,6 +70,19 @@ class AlreadyReversed(ConflictError):
     code = "transaction_already_reversed"
 
 
+class TransactionDeclined(LedgerFlowError):
+    """A blocking risk rule refused the posting.
+
+    402 rather than 400: the request was well-formed and the caller did
+    nothing wrong. Something about the pattern was refused, which is a
+    different conversation from a malformed body.
+    """
+
+    status_code = 402
+    error_type = "card_error"
+    code = "transaction_declined"
+
+
 class RateLimited(LedgerFlowError):
     status_code = 429
     error_type = "rate_limit_error"

@@ -79,8 +79,7 @@
     <div class="tiles tiles--stack" id="networth-tiles"></div>
   </section>
 
-
-  <section class="card col-8" aria-labelledby="category-h">
+  <section class="card col-6" aria-labelledby="category-h">
     <h2 id="category-h">Spend by category</h2>
     <p class="hint">
       Click a category to filter the feed. Grouped by the expense account each
@@ -91,13 +90,16 @@
     <svg id="category-chart" class="chart" role="img" aria-label="Spend by category"></svg>
   </section>
 
-
   <section class="card col-6" aria-labelledby="signals-h">
     <h2 id="signals-h">Fraud signals</h2>
-    <p class="hint">Emitted, never enforced. Nothing here blocked a posting.</p>
+    <p class="hint">
+      Most rules are advisory: they run after the money moved and can only
+      flag. A few run <em>inside</em> the write transaction and refuse the
+      posting outright &mdash; those are marked DECLINED, and the ledger has no
+      entry for them, because no money moved.
+    </p>
     <div class="scroll" id="signals"></div>
   </section>
-
 
   <section class="card col-6" aria-labelledby="feed-h">
     <h2 id="feed-h">Transaction feed</h2>

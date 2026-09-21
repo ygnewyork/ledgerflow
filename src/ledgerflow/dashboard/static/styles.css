@@ -351,3 +351,21 @@ dialog p { color: var(--text-secondary); font-size: 13px; }
 .ctl input, .ctl select { padding: 4px 8px; font-size: 12px; }
 .quick { display: inline-flex; gap: 2px; margin-left: auto; }
 .quick button { font-size: 12px; padding: 4px 10px; border-radius: 6px; }
+
+/* A decline and a flag are different events -- one has a ledger entry and one
+   never will -- so they do not get to look the same. */
+.signal { padding: 9px 0; border-bottom: 1px solid var(--grid); }
+.signal:last-child { border-bottom: none; }
+.signal.is-blocked {
+  border-left: 3px solid var(--critical);
+  padding-left: 9px;
+  margin-left: -12px;
+  background: color-mix(in srgb, var(--critical) 7%, transparent);
+}
+.signal .score { float: right; color: var(--text-muted); }
+.verdict {
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 4px; margin-left: 6px;
+}
+.verdict--block { background: var(--critical); color: #fff; font-weight: 600; }
+.verdict--flag { color: var(--text-muted); border: 1px solid var(--border); }

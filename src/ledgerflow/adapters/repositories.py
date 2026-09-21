@@ -1094,13 +1094,66 @@ class RiskRepository(_Repo):
                    COUNT(*)::int AS txn_count,
                    COALESCE(MAX(e.amount_minor), 0)::bigint AS max_amount_minor
               FROM entries e
-              JOIN accounts a ON a.id = e.account_id
              WHERE e.account_id = %s
-               AND e.direction <> a.normal_balance      -- money leaving the account
+               -- Spending always CREDITS the funding account -- every posting
+               -- rule is written that way. Testing `direction <> normal_balance`
+               -- instead is asset-centric: on a credit card, whose normal
+               -- balance IS credit, it counts zero, so every velocity and
+               -- z-score feature was blind to card spending. Which is where
+               -- most spending happens.
+               AND e.direction = 'credit'
                AND e.effective_at > %s AND e.effective_at <= %s
             """,
             (account_id, start, end),
         ) or {"spend_minor": 0, "txn_count": 0, "max_amount_minor": 0}
+
+    def velocity_probe(self, account_id: str, at: datetime) -> dict[str, Any]:
+        """Count and size of the last hour's outflows, in one round trip.
+
+        The full feature set is four queries. On the async path that is fine;
+        on the write path it would add four round trips to every posting to
+        answer a question one query answers. A blocking check has to be cheap
+        or it is not worth having.
+        """
+        return self._one(
+            """
+            SELECT COUNT(*)::int AS txn_count,
+                   COALESCE(MAX(e.amount_minor), 0)::bigint AS max_amount_minor
+              FROM entries e
+             WHERE e.account_id = %s
+               -- see spend_window: spending is a credit on the funding account
+               AND e.direction = 'credit'
+               AND e.effective_at > %s - interval '1 hour'
+               AND e.effective_at <= %s
+            """,
+            (account_id, at, at),
+        ) or {"txn_count": 0, "max_amount_minor": 0}
+
+    def record_decline(
+        self, *, signal_id: str, tenant_id: str, account_id: str,
+        rule: str, score: float, amount_minor: int, reason: str,
+        features: dict[str, Any],
+    ) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO fraud_signals
+                    (id, tenant_id, account_id, transaction_id, rule, score,
+                     features, action, attempted_amount_minor, reason)
+                VALUES (%s, %s, %s, NULL, %s, %s, %s, 'block', %s, %s)
+                """,
+                (signal_id, tenant_id, account_id, rule, score,
+                 json.dumps(features, default=str), amount_minor, reason),
+            )
+
+    def list_declines(self, tenant_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        return self._all(
+            "SELECT s.*, a.name AS account_name FROM fraud_signals s "
+            "JOIN accounts a ON a.id = s.account_id "
+            "WHERE s.tenant_id = %s AND s.action = 'block' "
+            "ORDER BY s.evaluated_at DESC LIMIT %s",
+            (tenant_id, limit),
+        )
 
     def baseline(self, account_id: str, end: datetime, days: int = 90) -> dict[str, Any]:
         return self._one(
@@ -1109,9 +1162,9 @@ class RiskRepository(_Repo):
                    COALESCE(STDDEV_POP(e.amount_minor), 0)::float8 AS stddev_amount,
                    COUNT(*)::int AS sample_size
               FROM entries e
-              JOIN accounts a ON a.id = e.account_id
              WHERE e.account_id = %s
-               AND e.direction <> a.normal_balance
+               -- see spend_window: spending is a credit on the funding account
+               AND e.direction = 'credit' 
                AND e.effective_at > %s - make_interval(days => %s)
                AND e.effective_at <= %s
             """,

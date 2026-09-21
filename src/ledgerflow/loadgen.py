@@ -32,11 +32,12 @@ import random
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 from . import ids
 from .adapters.db import unit_of_work
-from .application.services import TenantContext, post_transaction
+from .application.errors import TransactionDeclined
+from .application.services import TenantContext, post_transaction, record_decline
 from .domain.money import Money
 
 # ---------------------------------------------------------------------------
@@ -315,8 +316,10 @@ def _timeline(start: datetime, days: int, rng: random.Random) -> list[Event]:
         ))
 
     # --- anomaly 1: card testing -------------------------------------------
+    # Sized to run PAST the blocking threshold, not up to it. A burst that
+    # stops exactly at the limit demonstrates the flag and never the decline.
     burst = start + timedelta(days=days * 0.82)
-    for i in range(14):
+    for i in range(16):
         events.append(Event(
             at=burst + timedelta(seconds=i * 40), kind="card_purchase",
             accounts={"expense": "general", "funding": "card"},
@@ -502,18 +505,35 @@ def generate(
     tally: dict[str, int] = {}
     started = time.perf_counter()
 
+    declined: list[tuple[Event, Any]] = []
+
     with unit_of_work() as uow:
         for event in events:
-            post_transaction(
-                uow, ctx,
-                kind=event.kind,
-                accounts=event.accounts,
-                amount=Money(event.amount, "usd"),
-                effective_at=event.at,
-                descriptor=event.descriptor,
-                metadata={"source": "loadgen", **({"note": event.note} if event.note else {})},
-            )
+            try:
+                post_transaction(
+                    uow, ctx,
+                    kind=event.kind,
+                    accounts=event.accounts,
+                    amount=Money(event.amount, "usd"),
+                    effective_at=event.at,
+                    descriptor=event.descriptor,
+                    metadata={"source": "loadgen",
+                              **({"note": event.note} if event.note else {})},
+                )
+            except TransactionDeclined as exc:
+                # A blocking rule refused it. That is the system working, not
+                # the generator failing -- the planted card-testing burst is
+                # supposed to get cut off partway through.
+                declined.append((event, exc))
+                continue
             tally[event.kind] = tally.get(event.kind, 0) + 1
+
+    # recorded outside the loop: each decline needs its own transaction, and
+    # the one above is still open
+    for _, refusal in declined:
+        record_decline(ctx, refusal)
+    if declined:
+        tally["declined"] = len(declined)
 
     elapsed = time.perf_counter() - started
     result = {

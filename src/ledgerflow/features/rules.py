@@ -4,10 +4,17 @@ Rules, not a model. A model needs labels, and labels need a fraud team; a rule
 set can be read, argued with, and unit-tested today. The features are built so
 a model can be trained on them later without changing the pipeline.
 
-Nothing here blocks a posting. Signals are emitted and surfaced. A false
-positive that declines someone's groceries is a far worse outcome than a flag a
-human reviews -- and the demo is more interesting when the signal stream runs
-alongside the money stream instead of stopping it.
+Almost nothing here blocks a posting. A false positive that declines someone's
+groceries is a far worse outcome than a flag a human reviews, so the default is
+``action="flag"``: the rule fires after the money moved and only annotates.
+
+The exception earns its place. One rule carries ``action="block"``, evaluated
+inside the write transaction by ``application.services._screen`` before any
+entry exists, and it sits at a deliberately higher threshold than the advisory
+rule that shadows it. Read ``.blocking`` as "this one is allowed to say no",
+and note that the two callers below are not interchangeable: ``advisory()`` is
+what the post-commit worker may record, because a blocking rule evaluated after
+COMMIT would claim a refusal that never happened.
 """
 
 from __future__ import annotations
@@ -24,6 +31,15 @@ class Rule:
     score: float
     description: str
     predicate: Callable[[Features], bool]
+    #: "flag" runs after the money moved and can only annotate. "block" runs
+    #: inside the write transaction and stops the posting. The distinction is
+    #: the whole design: a blocking rule buys safety with latency on every
+    #: write and with the cost of being wrong in public, so it has to earn it.
+    action: str = "flag"
+
+    @property
+    def blocking(self) -> bool:
+        return self.action == "block"
 
     def evaluate(self, features: Features) -> bool:
         try:
@@ -57,6 +73,16 @@ RULES: tuple[Rule, ...] = (
         lambda f: f.txn_count_1h > 10 and f.max_amount_1h < 500,
     ),
     Rule(
+        "card_testing_block", 0.95,
+        "a card-testing burst that has gone past the point of doubt: the next "
+        "attempt is declined rather than flagged",
+        # Deliberately a higher bar than the advisory rule above. The flag
+        # fires at 10 and a human looks; blocking waits until 12, because the
+        # cost of a false positive here is someone's card declining at a till.
+        lambda f: f.txn_count_1h > 12 and f.max_amount_1h < 500,
+        action="block",
+    ),
+    Rule(
         "merchant_sprawl", 0.4,
         "an unusual number of distinct merchants in a week",
         lambda f: f.distinct_merchants_7d > 25,
@@ -65,4 +91,13 @@ RULES: tuple[Rule, ...] = (
 
 
 def evaluate(features: Features) -> list[Rule]:
+    """Every rule that fires, advisory and blocking alike."""
     return [rule for rule in RULES if rule.evaluate(features)]
+
+
+def advisory(features: Features) -> list[Rule]:
+    """What the async worker records. It cannot stop anything."""
+    return [r for r in RULES if not r.blocking and r.evaluate(features)]
+
+
+BLOCKING = tuple(r for r in RULES if r.blocking)

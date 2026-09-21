@@ -94,6 +94,11 @@ def fraud_signal(row: dict[str, Any]) -> dict[str, Any]:
         "transaction": row.get("transaction_id"),
         "rule": row["rule"],
         "score": row["score"],
+        # "flag" means money moved and a human should look; "block" means the
+        # posting was refused and no ledger entry exists for it at all
+        "action": row.get("action", "flag"),
+        "attempted_amount": row.get("attempted_amount_minor"),
+        "reason": row.get("reason"),
         # the feature values as of evaluation. without these the decision
         # cannot be explained or reproduced months later.
         "features": row.get("features") or {},
