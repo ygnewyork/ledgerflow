@@ -36,7 +36,7 @@ DB      ?= postgresql://$(WHOAMI)@localhost:5432/ledgerflow
 
 export LEDGERFLOW_DATABASE_URL ?= $(DB)
 
-.PHONY: help setup demo serve test lint clean db-create doctor env brew-pg-5433
+.PHONY: help setup demo serve share test lint clean db-create doctor env brew-pg-5433
 
 help:
 	@grep -E '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-12s %s\n", $$1, $$2}'
@@ -105,6 +105,9 @@ demo: setup  ## migrate, bootstrap, generate a year of history, drain the pipeli
 
 serve: $(VENV)  ## run the API and dashboard on :8000
 	$(PY) -m ledgerflow.cli serve
+
+share: $(VENV)  ## put the running demo on a temporary public URL (needs cloudflared)
+	PY=$(PY) ./scripts/demo-public.sh
 
 test: $(VENV)  ## run every test
 	$(VENV)/bin/pytest -q
