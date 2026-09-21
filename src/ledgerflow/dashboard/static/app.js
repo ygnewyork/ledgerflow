@@ -709,18 +709,29 @@ async function showTransaction(id) {
 
 /* ---------- load ---------- */
 
+// Checking, if this tenant has one. It is where a paycheck lands and where
+// the card gets paid from, so the feed, the categories and the chart all read
+// as one story -- which the largest-balance account does not: on these books
+// that is Investments, whose feed is a wall of transfers.
+//
+// Matched on external_id first, since that is the caller's own stable handle,
+// and on the name only as a fallback for books that never set one. A tenant
+// with neither still gets the first account in the sorted list.
+function defaultAccount(accounts) {
+  return accounts.find((a) => a.external_id === "checking")
+    || accounts.find((a) => /checking/i.test(a.name))
+    || accounts[0];
+}
+
 async function loadAccounts() {
   const list = await api("/v1/accounts?limit=100");
-  // Asset accounts first -- a balance chart of Expenses:Groceries is
-  // technically correct and not what anyone opens this page to see -- then by
-  // balance, so the default is an account with history rather than whichever
-  // one sorts first alphabetically. "Assets:Cash" beating "Assets:Checking" to
-  // the front and rendering an empty chart is not a good first impression.
   // Only accounts money SITS in. An expense account has a "balance" -- the
   // total ever spent -- and charting it beside checking invites reading a
   // year of groceries as savings. Spending has its own panel, with its own
   // axis, on purpose.
   list.data = list.data.filter((a) => a.type === "asset" || a.type === "liability");
+  // Assets before liabilities, then by size: an ordering for the dropdown, not
+  // a way of choosing the default. See defaultAccount for that.
   state.accounts = list.data.sort((a, b) =>
     (a.type === "asset" ? 0 : 1) - (b.type === "asset" ? 0 : 1)
     || Math.abs(b.balance || 0) - Math.abs(a.balance || 0)
@@ -730,7 +741,7 @@ async function loadAccounts() {
   picker.innerHTML = state.accounts
     .map((a) => `<option value="${a.id}">${a.name}</option>`).join("");
   if (!state.accountId || !state.accounts.some((a) => a.id === state.accountId)) {
-    state.accountId = state.accounts[0]?.id || null;
+    state.accountId = defaultAccount(state.accounts)?.id || null;
   }
   picker.value = state.accountId || "";
 }
